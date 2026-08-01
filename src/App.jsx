@@ -175,6 +175,93 @@ function GalleryItem({ item, selected, onOpen }) {
   );
 }
 
+function OutfitCard({ outfit, selected, onOpen }) {
+  const occasions = Array.isArray(outfit.occasion) ? outfit.occasion.join(" · ") : "wardrobe idea";
+
+  return (
+    <button
+      className={`outfit-card${selected ? " selected" : ""}`}
+      type="button"
+      onClick={() => onOpen(outfit.id)}
+      aria-label={`View ${outfit.name || "outfit idea"}`}
+      aria-pressed={selected}
+    >
+      <span className="outfit-card-photo">
+        <OptimizedImage
+          src={outfit.image}
+          alt=""
+          sizes="(max-width: 520px) calc(50vw - 16px), (max-width: 860px) calc(50vw - 28px), 340px"
+          breakpoints={[240, 320, 480, 640, 800]}
+        />
+      </span>
+      <span className="outfit-card-details">
+        <span className="outfit-card-heading">
+          <strong>{outfit.name}</strong>
+          <small>{occasions}</small>
+        </span>
+        <span className="outfit-card-reason">{outfit.reason}</span>
+      </span>
+    </button>
+  );
+}
+
+function OutfitViewer({ outfit, items, onClose }) {
+  const closeButtonRef = useRef(null);
+  const itemNames = useMemo(() => new Map(items.map((item) => [item.id, item.name])), [items]);
+
+  useEffect(() => {
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") onClose();
+    };
+
+    document.addEventListener("keydown", onKeyDown);
+    document.body.classList.add("viewer-open");
+    closeButtonRef.current?.focus({ preventScroll: true });
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.body.classList.remove("viewer-open");
+    };
+  }, [onClose]);
+
+  return (
+    <div className="viewer-overlay outfit-overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <div className="viewer-entry outfit-viewer-entry">
+        <aside className="outfit-viewer" role="dialog" aria-modal="true" aria-label={`${outfit.name} outfit idea`}>
+          <button className="viewer-icon-close" type="button" onClick={onClose} aria-label="Close outfit viewer" ref={closeButtonRef}>
+            <X size={24} weight="light" aria-hidden="true" />
+          </button>
+          <div className="outfit-viewer-photo">
+            <OptimizedImage
+              src={outfit.image}
+              alt={`${outfit.name} modeled outfit`}
+              sizes="(max-width: 860px) 100vw, 520px"
+              breakpoints={[320, 480, 640, 800, 1040, 1280]}
+              quality={84}
+              priority
+            />
+          </div>
+          <div className="outfit-viewer-details">
+            <p className="outfit-viewer-eyebrow">Outfit idea</p>
+            <h2>{outfit.name}</h2>
+            {Array.isArray(outfit.occasion) && outfit.occasion.length > 0 && (
+              <div className="outfit-occasion-list" aria-label="Occasions">
+                {outfit.occasion.map((occasion) => <span key={occasion}>{occasion}</span>)}
+              </div>
+            )}
+            <p className="outfit-viewer-reason">{outfit.reason}</p>
+            <div className="outfit-piece-list">
+              <p>Pieces</p>
+              <ul>
+                {outfit.garmentIds.map((garmentId) => <li key={garmentId}>{itemNames.get(garmentId) || garmentId}</li>)}
+              </ul>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </div>
+  );
+}
+
 function TagEditor({ tags, onChange }) {
   const [input, setInput] = useState("");
 
@@ -534,10 +621,15 @@ function ItemViewer({ item, onClose, onSave, onDelete }) {
 
 export function App() {
   const [items, setItems] = useState([]);
+  const [outfits, setOutfits] = useState([]);
+  const [activeView, setActiveView] = useState("wardrobe");
   const [activeType, setActiveType] = useState("all");
   const [selectedId, setSelectedId] = useState(null);
+  const [selectedOutfitId, setSelectedOutfitId] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [outfitLoading, setOutfitLoading] = useState(true);
   const [error, setError] = useState("");
+  const [outfitError, setOutfitError] = useState("");
 
   useEffect(() => {
     fetch("/api/import/wardrobe", { cache: "no-store" })
@@ -555,7 +647,19 @@ export function App() {
       .finally(() => setLoading(false));
   }, []);
 
+  useEffect(() => {
+    fetch("/api/import/outfits", { cache: "no-store" })
+      .then((response) => {
+        if (!response.ok) throw new Error("Could not load outfit ideas.");
+        return response.json();
+      })
+      .then((payload) => setOutfits(Array.isArray(payload) ? payload : payload.outfits || []))
+      .catch((requestError) => setOutfitError(requestError.message))
+      .finally(() => setOutfitLoading(false));
+  }, []);
+
   const selectedItem = items.find((item) => item.id === selectedId) || null;
+  const selectedOutfit = outfits.find((outfit) => outfit.id === selectedOutfitId) || null;
 
   const visibleItems = useMemo(() => {
     const filtered = activeType === "all" ? items : items.filter((item) => item.part === activeType);
@@ -571,6 +675,12 @@ export function App() {
   const chooseType = (typeId) => {
     setActiveType(typeId);
     setSelectedId(null);
+  };
+
+  const chooseView = (view) => {
+    setActiveView(view);
+    setSelectedId(null);
+    setSelectedOutfitId(null);
   };
 
   const saveItem = (updatedItem) => {
@@ -608,42 +718,89 @@ export function App() {
       <main className="gallery-pane">
         <header className="gallery-header">
           <div className="gallery-meta-row">
-            <p className="piece-count">{items.length} {items.length === 1 ? "piece" : "pieces"}</p>
-          </div>
-          <nav className="category-nav" aria-label="Filter wardrobe by item type">
-            {TYPES.map((type) => (
+            <p className="piece-count">{activeView === "wardrobe" ? `${items.length} ${items.length === 1 ? "piece" : "pieces"}` : `${outfits.length} ${outfits.length === 1 ? "look" : "looks"}`}</p>
+            <nav className="view-nav" aria-label="Choose collection" role="tablist">
               <button
-                key={type.id}
                 type="button"
-                className={activeType === type.id ? "active" : ""}
-                onClick={() => chooseType(type.id)}
-                aria-pressed={activeType === type.id}
+                className={activeView === "wardrobe" ? "active" : ""}
+                onClick={() => chooseView("wardrobe")}
+                aria-selected={activeView === "wardrobe"}
+                role="tab"
               >
-                {type.label}
+                Wardrobe
               </button>
-            ))}
-          </nav>
+              <button
+                type="button"
+                className={activeView === "outfits" ? "active" : ""}
+                onClick={() => chooseView("outfits")}
+                aria-selected={activeView === "outfits"}
+                role="tab"
+              >
+                Outfits
+                {outfits.length > 0 && <span className="view-nav-count">{outfits.length}</span>}
+              </button>
+            </nav>
+          </div>
+          {activeView === "wardrobe" && (
+            <nav className="category-nav" aria-label="Filter wardrobe by item type">
+              {TYPES.map((type) => (
+                <button
+                  key={type.id}
+                  type="button"
+                  className={activeType === type.id ? "active" : ""}
+                  onClick={() => chooseType(type.id)}
+                  aria-pressed={activeType === type.id}
+                >
+                  {type.label}
+                </button>
+              ))}
+            </nav>
+          )}
         </header>
 
-        {error && <p className="status error">{error}</p>}
-        {!error && loading && <p className="status">Loading wardrobe</p>}
-        {!error && !loading && !items.length && <p className="status empty">Drop, paste, or add a photo to import your first piece.</p>}
+        {activeView === "wardrobe" && (
+          <>
+            {error && <p className="status error">{error}</p>}
+            {!error && loading && <p className="status">Loading wardrobe</p>}
+            {!error && !loading && !items.length && <p className="status empty">Drop, paste, or add a photo to import your first piece.</p>}
+            {!!items.length && (
+              <section className="gallery-grid" aria-label={`${TYPE_MAP[activeType]?.label || "All"} wardrobe items`}>
+                {visibleItems.map((item) => (
+                  <GalleryItem
+                    key={item.id}
+                    item={item}
+                    selected={selectedId === item.id}
+                    onOpen={setSelectedId}
+                  />
+                ))}
+              </section>
+            )}
+          </>
+        )}
 
-        {!!items.length && (
-          <section className="gallery-grid" aria-label={`${TYPE_MAP[activeType]?.label || "All"} wardrobe items`}>
-            {visibleItems.map((item) => (
-              <GalleryItem
-                key={item.id}
-                item={item}
-                selected={selectedId === item.id}
-                onOpen={setSelectedId}
-              />
-            ))}
-          </section>
+        {activeView === "outfits" && (
+          <>
+            {outfitError && <p className="status error">{outfitError}</p>}
+            {!outfitError && outfitLoading && <p className="status">Loading outfit ideas</p>}
+            {!outfitError && !outfitLoading && !outfits.length && <p className="status empty">Generate an outfit collection to see modeled looks here.</p>}
+            {!!outfits.length && (
+              <section className="outfit-grid" aria-label="Modeled outfit ideas">
+                {outfits.map((outfit) => (
+                  <OutfitCard
+                    key={outfit.id}
+                    outfit={outfit}
+                    selected={selectedOutfitId === outfit.id}
+                    onOpen={setSelectedOutfitId}
+                  />
+                ))}
+              </section>
+            )}
+          </>
         )}
       </main>
 
       {selectedItem && <ItemViewer item={selectedItem} onClose={() => setSelectedId(null)} onSave={saveItem} onDelete={deleteItem} />}
+      {selectedOutfit && <OutfitViewer outfit={selectedOutfit} items={items} onClose={() => setSelectedOutfitId(null)} />}
       <WardrobeImportFlow onGarmentApproved={addImportedItem} onModeledApproved={attachImportedModeledImage} />
     </div>
   );
