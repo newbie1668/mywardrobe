@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Check, Plus, Trash, X } from "@phosphor-icons/react";
 import { WardrobeImportFlow } from "./import-flow.jsx";
 import { OptimizedImage } from "./OptimizedImage.jsx";
+import { getPairingRecommendations, PAIRING_ATTRIBUTION } from "./pairing-data.js";
 
 const STORAGE_KEY = "open-wardrobe-edits-v1";
 const DELETED_STORAGE_KEY = "open-wardrobe-deleted-v1";
@@ -262,6 +263,70 @@ function OutfitViewer({ outfit, items, onClose }) {
   );
 }
 
+function PairingPanel({ item, items, onOpenItem }) {
+  const pairing = useMemo(() => getPairingRecommendations(item, items), [item, items]);
+  const anchor = pairing?.anchors?.[0] || null;
+  const reference = pairing?.reference || null;
+
+  return (
+    <section className="pairing-panel" aria-labelledby="pairing-title">
+      <div className="pairing-heading">
+        <div>
+          <p className="pairing-eyebrow">Pair it with</p>
+          <h3 id="pairing-title">Japanese colour harmony</h3>
+        </div>
+        <small>{pairing?.suggestions?.length || 0} ideas</small>
+      </div>
+
+      {anchor && (
+        <div className="pairing-anchor">
+          <span className="pairing-anchor-swatch" style={{ backgroundColor: anchor.hex }} aria-hidden="true" />
+          <div>
+            <strong>{anchor.name}</strong>
+            <small>{anchor.hex} · closest Wada colour</small>
+          </div>
+        </div>
+      )}
+
+      {reference && (
+        <div className="pairing-reference">
+          <div className="pairing-reference-meta">
+            <span>{reference.source}</span>
+            <small>{reference.name}</small>
+          </div>
+          <div className="pairing-reference-swatches" aria-label={`${reference.name} palette`}>
+            {reference.colors.map((color) => (
+              <span key={`${reference.id}-${color.hex}`} style={{ backgroundColor: color.hex }} title={`${color.name} ${color.hex}`} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {pairing?.suggestions?.length ? (
+        <div className="pairing-list" aria-label={`What to pair with ${item.name}`}>
+          {pairing.suggestions.map(({ item: candidate, match, matchedColor }) => (
+            <button className="pairing-card" key={candidate.id} type="button" onClick={() => onOpenItem(candidate.id)}>
+              <span className="pairing-card-image">
+                <OptimizedImage src={candidate.thumbnail || candidate.image} alt="" sizes="76px" breakpoints={[80, 120, 160]} />
+              </span>
+              <span className="pairing-card-copy">
+                <strong>{candidate.name}</strong>
+                <small>{TYPE_MAP[candidate.part]?.singular || "Wardrobe item"}</small>
+                <span>{matchedColor.name} · {match.source === "Vol. 1" ? `plate ${match.palette.id}` : match.palette.name}</span>
+              </span>
+              <span className="pairing-card-swatch" style={{ backgroundColor: matchedColor.hex }} aria-hidden="true" />
+            </button>
+          ))}
+        </div>
+      ) : (
+        <p className="pairing-empty">Add more coloured pieces to get a pairing shortlist.</p>
+      )}
+
+      <p className="pairing-attribution">{PAIRING_ATTRIBUTION}</p>
+    </section>
+  );
+}
+
 function TagEditor({ tags, onChange }) {
   const [input, setInput] = useState("");
 
@@ -422,7 +487,7 @@ function ItemEditor({ draft, setDraft, palette, sampling, setSampling, sampleSta
   );
 }
 
-function ItemViewer({ item, onClose, onSave, onDelete }) {
+function ItemViewer({ item, items, onOpenItem, onClose, onSave, onDelete }) {
   const closeButtonRef = useRef(null);
   const imageRef = useRef(null);
   const samplingCanvasRef = useRef(null);
@@ -471,6 +536,14 @@ function ItemViewer({ item, onClose, onSave, onDelete }) {
     if (isDirty) nudgeUnsaved();
     else onClose();
   }, [isDirty, nudgeUnsaved, onClose]);
+
+  const openPairing = (id) => {
+    if (isDirty) {
+      nudgeUnsaved();
+      return;
+    }
+    onOpenItem(id);
+  };
 
   useEffect(() => {
     const onKeyDown = (event) => {
@@ -599,6 +672,8 @@ function ItemViewer({ item, onClose, onSave, onDelete }) {
           setSampling={setSampling}
           sampleStatus={sampleStatus}
         />
+
+        <PairingPanel item={item} items={items} onOpenItem={openPairing} />
 
         {closeBlocked && <p className="unsaved-notice" role="status">Save or cancel changes before closing.</p>}
 
@@ -799,7 +874,7 @@ export function App() {
         )}
       </main>
 
-      {selectedItem && <ItemViewer item={selectedItem} onClose={() => setSelectedId(null)} onSave={saveItem} onDelete={deleteItem} />}
+      {selectedItem && <ItemViewer item={selectedItem} items={items} onOpenItem={setSelectedId} onClose={() => setSelectedId(null)} onSave={saveItem} onDelete={deleteItem} />}
       {selectedOutfit && <OutfitViewer outfit={selectedOutfit} items={items} onClose={() => setSelectedOutfitId(null)} />}
       <WardrobeImportFlow onGarmentApproved={addImportedItem} onModeledApproved={attachImportedModeledImage} />
     </div>

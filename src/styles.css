@@ -655,6 +655,201 @@ button { font: inherit; }
   padding: 12px 34px 46px;
 }
 
+.pairing-panel {
+  margin-top: 32px;
+  border-top: 1px solid var(--line);
+  padding-top: 24px;
+}
+
+.pairing-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.pairing-eyebrow {
+  margin: 0 0 9px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
+.pairing-heading h3 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 520;
+  letter-spacing: -.015em;
+}
+
+.pairing-heading > small {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.pairing-anchor {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  margin-top: 20px;
+  border: 1px solid var(--line);
+  padding: 10px 11px;
+}
+
+.pairing-anchor-swatch,
+.pairing-card-swatch {
+  flex: 0 0 auto;
+  display: block;
+  border: 1px solid rgba(25, 25, 25, .14);
+}
+
+.pairing-anchor-swatch {
+  width: 27px;
+  height: 27px;
+}
+
+.pairing-anchor div {
+  display: grid;
+  gap: 3px;
+}
+
+.pairing-anchor strong {
+  font-size: 12px;
+  font-weight: 520;
+}
+
+.pairing-anchor small,
+.pairing-card-copy small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.pairing-reference {
+  margin-top: 18px;
+}
+
+.pairing-reference-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.pairing-reference-meta span,
+.pairing-reference-meta small {
+  color: var(--muted);
+  font-size: 9px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.pairing-reference-meta span { color: var(--ink); }
+
+.pairing-reference-swatches {
+  display: flex;
+  height: 14px;
+}
+
+.pairing-reference-swatches span {
+  flex: 1 1 0;
+  border-top: 1px solid rgba(25, 25, 25, .12);
+  border-bottom: 1px solid rgba(25, 25, 25, .12);
+}
+
+.pairing-reference-swatches span + span { border-left: 1px solid rgba(25, 25, 25, .12); }
+
+.pairing-list {
+  display: grid;
+  gap: 7px;
+  margin-top: 18px;
+}
+
+.pairing-card {
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr) 18px;
+  align-items: center;
+  gap: 11px;
+  border: 1px solid transparent;
+  padding: 5px;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 160ms ease, background-color 160ms ease;
+}
+
+.pairing-card:hover,
+.pairing-card:focus-visible {
+  border-color: var(--line);
+  background: rgba(25, 25, 25, .035);
+  outline: none;
+}
+
+.pairing-card-image {
+  width: 56px;
+  height: 56px;
+  display: block;
+  overflow: hidden;
+  background: #ded8ce;
+}
+
+.pairing-card-image img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+}
+
+.pairing-card-copy {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.pairing-card-copy strong,
+.pairing-card-copy > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pairing-card-copy strong {
+  font-size: 12px;
+  font-weight: 520;
+}
+
+.pairing-card-copy > span {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.pairing-card-swatch {
+  width: 16px;
+  height: 16px;
+}
+
+.pairing-empty {
+  margin: 18px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.pairing-attribution {
+  margin: 20px 0 0;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
 .details-label {
   margin: 0 0 24px;
   color: var(--muted);
