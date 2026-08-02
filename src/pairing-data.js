@@ -255,6 +255,34 @@ const COMPLEMENTARY_PARTS = {
   accessories_up: ["upperbody", "lowerbody", "shoes", "wholebody_up"],
 };
 
+function itemContext(item) {
+  const text = `${item?.name || ""} ${(item?.tags || []).join(" ")}`.toLowerCase();
+  const has = (...terms) => terms.some((term) => text.includes(term));
+  return {
+    athletic: has("athletic", "sportswear", "running", "football", "basketball", "cycling", "performance"),
+    formal: has("formal", "tailored", "suit", "dress trousers", "dress shirt", "derby", "blazer"),
+    graphic: has("graphic", "logo", "numbered", "typography"),
+    swim: has("swim", "swimwear"),
+    summer: has("swim", "swimwear", "beach", "resort", "holiday", "palm", "linen", "summer", "sandals", "tank"),
+  };
+}
+
+function canPairByContext(selected, candidate) {
+  const selectedContext = itemContext(selected);
+  const candidateContext = itemContext(candidate);
+
+  // Swimwear needs a visible beach/resort/summer cue on the other piece.
+  if (selectedContext.swim !== candidateContext.swim) {
+    if (!selectedContext.summer || !candidateContext.summer) return false;
+  }
+
+  // Keep formal tailoring away from obvious sportswear and novelty graphics.
+  if ((selectedContext.formal && candidateContext.athletic) || (candidateContext.formal && selectedContext.athletic)) return false;
+  if ((selectedContext.formal && candidateContext.graphic) || (candidateContext.formal && selectedContext.graphic)) return false;
+
+  return true;
+}
+
 export function getPairingRecommendations(item, items) {
   if (!item) return null;
   const selectedColors = itemColors(item);
@@ -268,7 +296,7 @@ export function getPairingRecommendations(item, items) {
 
   const preferredParts = COMPLEMENTARY_PARTS[item.part] || Object.keys(COMPLEMENTARY_PARTS);
   const suggestions = items
-    .filter((candidate) => candidate.id !== item.id && preferredParts.includes(candidate.part))
+    .filter((candidate) => candidate.id !== item.id && preferredParts.includes(candidate.part) && canPairByContext(item, candidate))
     .map((candidate) => {
       const candidateColors = itemColors(candidate);
       const classic = bestClassicMatch(anchors, candidateColors);
