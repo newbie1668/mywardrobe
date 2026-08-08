@@ -2,9 +2,45 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Check, Plus, Trash, X } from "@phosphor-icons/react";
 import { WardrobeImportFlow } from "./import-flow.jsx";
 import { OptimizedImage } from "./OptimizedImage.jsx";
+import {
+  createCompleteLook,
+  getLookBuilder,
+  getWearableCoreStatus,
+  selectPairingOption,
+  switchReferenceCombination,
+} from "./pairing-data.js";
+import {
+  applyModeledPreviewJob,
+  createSavedOutfit,
+  deleteSavedOutfit,
+  generateSavedOutfitCopy,
+  markSavedOutfitsIncomplete,
+  readOutfitCollection,
+  readSavedOutfits,
+  renameSavedOutfit,
+  retrySavedOutfitCopy,
+  retrySavedOutfitPreview as restartSavedOutfitPreview,
+  writeSavedOutfits,
+} from "./saved-outfits.js";
+import { createGroundedOutfitCopy } from "./outfit-copy.js";
+import { createModeledPreviewService } from "./modeled-preview-service.js";
 
 const STORAGE_KEY = "open-wardrobe-edits-v1";
 const DELETED_STORAGE_KEY = "open-wardrobe-deleted-v1";
+const DEFAULT_MODELED_PREVIEW_SERVICE = createModeledPreviewService();
+
+async function loadWardrobeFromApi() {
+  const response = await fetch("/api/import/wardrobe", { cache: "no-store" });
+  if (!response.ok) throw new Error("Could not load the wardrobe.");
+  return response.json();
+}
+
+async function loadCuratedOutfitsFromApi() {
+  const response = await fetch("/api/import/outfits", { cache: "no-store" });
+  if (!response.ok) throw new Error("Could not load outfit ideas.");
+  const payload = await response.json();
+  return Array.isArray(payload) ? payload : payload.outfits || [];
+}
 
 const TYPES = [
   { id: "all", label: "All" },
@@ -175,6 +211,497 @@ function GalleryItem({ item, selected, onOpen }) {
   );
 }
 
+function outfitMetadata(outfit) {
+  if (outfit.sourceType === "saved") {
+    const combinationNumber = outfit.referenceCombination?.combinationNumber;
+    return combinationNumber ? `Dictionary Vol. 1 · Combination ${combinationNumber}` : "Dictionary Vol. 1";
+  }
+  return Array.isArray(outfit.occasion) ? outfit.occasion.join(" · ") : "wardrobe idea";
+}
+
+function generationMessage(outfit) {
+  if (outfit.incomplete?.missingGarmentIds?.length) return "This Saved Outfit is incomplete because a selected wardrobe piece was removed.";
+  if (outfit.generation?.status === "failed") return outfit.generation.error || "Preview generation needs attention.";
+  if (outfit.generation?.status === "reviewing") return "Your Modeled Preview is being checked for identity and garment fidelity.";
+  if (outfit.generation?.status === "generating") return "Your modeled preview is being generated.";
+  if (outfit.generation?.status === "ready") return "Your Modeled Preview is ready.";
+  return outfit.reason;
+}
+
+function previewStateLabel(outfit) {
+  if (outfit.incomplete?.missingGarmentIds?.length) return "Incomplete outfit";
+  if (outfit.generation?.status === "failed") return "Preview failed";
+  if (outfit.generation?.status === "reviewing") return "Reviewing preview";
+  if (outfit.generation?.status === "ready") return "Preview ready";
+  return "Generating preview";
+}
+
+function outfitDescriptionMessage(outfit) {
+  if (outfit.copyGeneration?.status === "failed") return outfit.copyGeneration.error || "Outfit Name and Description could not be generated.";
+  if (outfit.copyGeneration?.status === "generating") return "Writing your Outfit Name and Description from selected pieces.";
+  return outfit.description || "Your Outfit Name and Description are being prepared.";
+}
+
+function OutfitCard({ outfit, selected, onOpen }) {
+  const isGenerating = outfit.generation?.status === "generating";
+  const hasPreview = Boolean(outfit.image);
+
+  return (
+    <button
+      className={`outfit-card${selected ? " selected" : ""}`}
+      type="button"
+      onClick={() => onOpen(outfit.id)}
+      aria-label={`View ${outfit.name || "outfit idea"}`}
+      aria-pressed={selected}
+    >
+      <span className={`outfit-card-photo${isGenerating ? " generating" : ""}`}>
+        {hasPreview ? (
+          <OptimizedImage
+            src={outfit.image}
+            alt=""
+            sizes="(max-width: 520px) calc(50vw - 16px), (max-width: 860px) calc(50vw - 28px), 340px"
+            breakpoints={[240, 320, 480, 640, 800]}
+          />
+        ) : (
+          <span className="outfit-card-generation" aria-hidden="true">{previewStateLabel(outfit)}</span>
+        )}
+      </span>
+      <span className="outfit-card-details">
+        <span className="outfit-card-heading">
+          <strong>{outfit.name}</strong>
+          <small>{outfitMetadata(outfit)}</small>
+        </span>
+        <span className="outfit-card-reason">{generationMessage(outfit)}</span>
+        {outfit.sourceType === "saved" && <span className="outfit-card-description">{outfitDescriptionMessage(outfit)}</span>}
+      </span>
+    </button>
+  );
+}
+
+function OutfitViewer({ outfit, items, onClose, onDelete, onRename, onRetryCopy, onRetryPreview }) {
+  const closeButtonRef = useRef(null);
+  const [outfitName, setOutfitName] = useState(outfit.name || "Saved outfit");
+  const itemNames = useMemo(() => new Map(items.map((item) => [item.id, item.name])), [items]);
+  const isSaved = outfit.sourceType === "saved";
+  const hasPreview = Boolean(outfit.image);
+  const pieces = isSaved
+    ? Object.values(outfit.selectedGarmentsByRole || {})
+    : outfit.garmentIds.map((garmentId) => ({ pieceId: garmentId, pieceName: itemNames.get(garmentId) || garmentId }));
+
+  useEffect(() => {
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") onClose();
+    };
+
+    document.addEventListener("keydown", onKeyDown);
+    document.body.classList.add("viewer-open");
+    closeButtonRef.current?.focus({ preventScroll: true });
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.body.classList.remove("viewer-open");
+    };
+  }, [onClose]);
+
+  useEffect(() => {
+    setOutfitName(outfit.name || "Saved outfit");
+  }, [outfit.id, outfit.name]);
+
+  const saveName = (event) => {
+    event.preventDefault();
+    onRename?.(outfit.id, outfitName);
+  };
+
+  const deleteOutfit = () => {
+    if (window.confirm(`Delete ${outfit.name}? This cannot be undone.`)) onDelete?.(outfit.id);
+  };
+
+  return (
+    <div className="viewer-overlay outfit-overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <div className="viewer-entry outfit-viewer-entry">
+        <aside className="outfit-viewer" role="dialog" aria-modal="true" aria-label={`${outfit.name} outfit idea`}>
+          <button className="viewer-icon-close" type="button" onClick={onClose} aria-label="Close outfit viewer" ref={closeButtonRef}>
+            <X size={24} weight="light" aria-hidden="true" />
+          </button>
+          <div className={`outfit-viewer-photo${!hasPreview ? " generating" : ""}`}>
+            {hasPreview ? (
+              <OptimizedImage
+                src={outfit.image}
+                alt={`${outfit.name} modeled outfit`}
+                sizes="(max-width: 860px) 100vw, 520px"
+                breakpoints={[320, 480, 640, 800, 1040, 1280]}
+                quality={84}
+                priority
+              />
+            ) : <span className="outfit-card-generation">{previewStateLabel(outfit)}</span>}
+          </div>
+          <div className="outfit-viewer-details">
+            <p className="outfit-viewer-eyebrow">{isSaved ? outfitMetadata(outfit) : "Outfit idea"}</p>
+            <h2>{outfit.name}</h2>
+            {isSaved && (
+              <form className="outfit-name-editor" onSubmit={saveName}>
+                <label>
+                  <span>Outfit Name</span>
+                  <input value={outfitName} onChange={(event) => setOutfitName(event.target.value)} aria-label="Outfit Name" />
+                </label>
+                <button type="submit" disabled={!outfitName.trim() || outfitName.trim() === outfit.name}>Save name</button>
+              </form>
+            )}
+            {!isSaved && Array.isArray(outfit.occasion) && outfit.occasion.length > 0 && (
+              <div className="outfit-occasion-list" aria-label="Occasions">
+                {outfit.occasion.map((occasion) => <span key={occasion}>{occasion}</span>)}
+              </div>
+            )}
+            <p className="outfit-viewer-reason">{generationMessage(outfit)}</p>
+            {isSaved && outfit.generation?.status === "failed" && !outfit.incomplete?.missingGarmentIds?.length && (
+              <button className="outfit-preview-retry" type="button" onClick={() => onRetryPreview?.(outfit.id)}>Retry Modeled Preview</button>
+            )}
+            {isSaved && (
+              <div className="outfit-description" aria-live="polite">
+                <p>{outfitDescriptionMessage(outfit)}</p>
+                {outfit.copyGeneration?.status === "failed" && (
+                  <button type="button" onClick={() => onRetryCopy?.(outfit.id)}>Retry Outfit Name and Description</button>
+                )}
+              </div>
+            )}
+            {isSaved && (
+              <button className="outfit-delete-button" type="button" onClick={deleteOutfit}>
+                <Trash size={15} weight="regular" aria-hidden="true" /> Delete Saved Outfit
+              </button>
+            )}
+            <div className="outfit-piece-list">
+              <p>Pieces</p>
+              <ul>
+                {pieces.map((piece) => <li key={piece.pieceId}>{piece.pieceName}</li>)}
+              </ul>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </div>
+  );
+}
+
+function LookBuilderPanel({ item, items, onSaveCompleteLook }) {
+  const lookBuilder = useMemo(() => getLookBuilder(item, items), [item, items]);
+  const defaultCombinationNumber = lookBuilder.candidates[0]?.combinationNumber || null;
+  const [referenceCombinationNumber, setReferenceCombinationNumber] = useState(defaultCombinationNumber);
+  const [completeLook, setCompleteLook] = useState(() => createCompleteLook(item, defaultCombinationNumber));
+  const [expandedRoles, setExpandedRoles] = useState({});
+  const [combinationChangeNotice, setCombinationChangeNotice] = useState(null);
+  const referenceCombination = lookBuilder.candidates.find(({ combinationNumber }) => (
+    combinationNumber === referenceCombinationNumber
+  )) || lookBuilder.candidates[0] || null;
+  const combinationGuide = referenceCombination?.combinationGuide || null;
+  const wearableCoreStatus = useMemo(() => (
+    getWearableCoreStatus(completeLook, referenceCombination)
+  ), [completeLook, referenceCombination]);
+
+  const applyReferenceTransition = (candidate, action = null) => {
+    const transition = switchReferenceCombination(completeLook, candidate);
+    const nextCombinationNumber = candidate?.combinationNumber || null;
+    setReferenceCombinationNumber(nextCombinationNumber);
+    setCompleteLook(transition.completeLook);
+    if (action || transition.removedSelections.length) {
+      setCombinationChangeNotice({
+        heading: nextCombinationNumber
+          ? `${action || "Updated"} Combination ${nextCombinationNumber}.`
+          : "No Candidate Combination remains.",
+        hasCandidate: Boolean(candidate),
+        retainedCount: transition.retainedSelections.length,
+        removedSelections: transition.removedSelections,
+      });
+    }
+  };
+
+  useEffect(() => {
+    const initialLook = createCompleteLook(item, defaultCombinationNumber);
+    const sameAnchor = completeLook.anchorPieceId === item.id && completeLook.anchorRole === initialLook.anchorRole;
+    const activeCandidate = sameAnchor ? lookBuilder.candidates.find(({ combinationNumber }) => (
+      combinationNumber === referenceCombinationNumber
+    )) : null;
+    const nextCandidate = activeCandidate || lookBuilder.candidates[0] || null;
+    const nextCombinationNumber = nextCandidate?.combinationNumber || null;
+
+    if (!sameAnchor) {
+      setReferenceCombinationNumber(defaultCombinationNumber);
+      setCompleteLook(initialLook);
+      setExpandedRoles({});
+      setCombinationChangeNotice(null);
+      return;
+    }
+
+    if (!nextCandidate) {
+      if (completeLook.referenceCombinationNumber !== null) {
+        applyReferenceTransition(null, "No Candidate Combination remains");
+      }
+      return;
+    }
+
+    const combinationChanged = referenceCombinationNumber !== nextCombinationNumber;
+    applyReferenceTransition(nextCandidate, combinationChanged ? "Switched to" : null);
+  }, [item.id, item.part, lookBuilder, referenceCombinationNumber]);
+
+  const choosePairingOption = (option) => {
+    setCompleteLook((current) => selectPairingOption(current, option));
+  };
+
+  const chooseReferenceCombination = (candidate) => {
+    if (candidate.combinationNumber === referenceCombination?.combinationNumber) return;
+    applyReferenceTransition(candidate, "Switched to");
+  };
+
+  return (
+    <section className="look-builder-panel" aria-labelledby="look-builder-title">
+      <div className="look-builder-heading">
+        <div>
+          <p className="look-builder-eyebrow">Build from this piece</p>
+          <h3 id="look-builder-title">Look Builder</h3>
+        </div>
+        <small>
+          {lookBuilder.candidates.length} Candidate {lookBuilder.candidates.length === 1 ? "Combination" : "Combinations"}
+        </small>
+      </div>
+
+      <div className="look-builder-anchor">
+        <span className="look-builder-anchor-image">
+          <OptimizedImage
+            src={item.thumbnail || item.image}
+            alt=""
+            sizes="58px"
+            breakpoints={[80, 120, 160]}
+          />
+        </span>
+        <div className="look-builder-anchor-copy">
+          <span>Anchor Piece</span>
+          <strong>{item.name || TYPE_MAP[item.part]?.singular || "Wardrobe item"}</strong>
+          {lookBuilder.anchorColour ? (
+            <small>
+              <span className="look-builder-anchor-swatch" style={{ backgroundColor: lookBuilder.anchorColour.garmentHex }} aria-hidden="true" />
+              Primary Anchor Colour {lookBuilder.anchorColour.garmentHex} is closest to {lookBuilder.anchorColour.dictionaryColourName}
+            </small>
+          ) : (
+            <small>No close Dictionary colour was found for the primary Anchor Colour.</small>
+          )}
+        </div>
+      </div>
+
+      {combinationChangeNotice && (
+        <div className="combination-change-notice" role="status" aria-live="polite">
+          <strong>{combinationChangeNotice.heading}</strong>
+          {combinationChangeNotice.removedSelections.length ? (
+            <>
+              <ul>
+                {combinationChangeNotice.removedSelections.map((selection) => (
+                  <li key={`${selection.wardrobeRole}-${selection.pieceId}`}>{selection.reason}</li>
+                ))}
+              </ul>
+              <p>No replacements were selected. {combinationChangeNotice.retainedCount
+                ? `${combinationChangeNotice.retainedCount} compatible ${combinationChangeNotice.retainedCount === 1 ? "selection was" : "selections were"} kept.`
+                : combinationChangeNotice.hasCandidate
+                  ? "Choose new Pairing Options below."
+                  : "Adjust the Anchor Colour or secondary colour to find a new Candidate Combination."}</p>
+            </>
+          ) : (
+            <p>{combinationChangeNotice.retainedCount ? `Kept ${combinationChangeNotice.retainedCount} compatible ${combinationChangeNotice.retainedCount === 1 ? "selection" : "selections"}.` : "No garment selections needed to change."}</p>
+          )}
+        </div>
+      )}
+
+      {lookBuilder.candidates.length ? (
+        <>
+          <div className="candidate-combinations">
+            <p>Candidate Combinations</p>
+            <div className="candidate-combination-list" role="tablist" aria-label="Choose a Dictionary Combination">
+              {lookBuilder.candidates.map((candidate) => {
+                const isReference = candidate.combinationNumber === referenceCombination?.combinationNumber;
+                return (
+                  <button
+                    key={candidate.combinationNumber}
+                    type="button"
+                    className={isReference ? "active" : ""}
+                    role="tab"
+                    aria-selected={isReference}
+                    aria-controls={`combination-guide-${candidate.combinationNumber}`}
+                    onClick={() => chooseReferenceCombination(candidate)}
+                  >
+                    <strong>{candidate.label}</strong>
+                    <span className="candidate-combination-swatches" aria-hidden="true">
+                      {candidate.combinationGuide.swatches.map((swatch) => (
+                        <i key={`${candidate.combinationNumber}-${swatch.hex}`} style={{ backgroundColor: swatch.hex }} />
+                      ))}
+                    </span>
+                    <small>
+                      {candidate.coverage.swatchCount} {candidate.coverage.swatchCount === 1 ? "colour" : "colours"} covered
+                    </small>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <article
+            className="combination-guide"
+            id={`combination-guide-${combinationGuide.combinationNumber}`}
+            role="tabpanel"
+            aria-live="polite"
+          >
+            <header>
+              <p>Combination Guide</p>
+              <h4>{combinationGuide.label}</h4>
+            </header>
+
+            <p className="combination-guide-mapping">
+              <span className="combination-guide-anchor-swatch" style={{ backgroundColor: combinationGuide.anchorColour.garmentHex }} aria-hidden="true" />
+              <span>
+                The primary Anchor Colour <strong>{combinationGuide.anchorColour.garmentHex}</strong> is {combinationGuide.anchorColour.relationship} <strong>{combinationGuide.anchorColour.dictionaryColourName}</strong> ({combinationGuide.anchorColour.dictionaryHex}).
+              </span>
+            </p>
+
+            <ul className="combination-guide-swatches" aria-label={`All colours in ${combinationGuide.label}`}>
+              {combinationGuide.swatches.map((swatch) => (
+                <li key={`${combinationGuide.combinationNumber}-${swatch.hex}`}>
+                  <span style={{ backgroundColor: swatch.hex }} aria-hidden="true" />
+                  <div>
+                    <strong>{swatch.name}</strong>
+                    <small>{swatch.hex}</small>
+                  </div>
+                </li>
+              ))}
+            </ul>
+
+            <p className="combination-guide-attribution">Source: {combinationGuide.attribution}</p>
+          </article>
+
+          <section className="pairing-options" aria-labelledby="pairing-options-title">
+            <div className="pairing-options-heading">
+              <div>
+                <p>Build a Wearable Core</p>
+                <h4 id="pairing-options-title">Pairing Options</h4>
+              </div>
+              <small>Required roles first · one piece per role</small>
+            </div>
+
+            <div className="pairing-role-list">
+              {referenceCombination.pairingOptionGroups.map((group) => {
+                const isExpanded = Boolean(expandedRoles[group.wardrobeRole]);
+                const displayedOptions = isExpanded ? group.allOptions : group.options;
+                const optionListId = `pairing-options-${referenceCombination.combinationNumber}-${group.wardrobeRole}`;
+                return (
+                <section className="pairing-role" key={group.wardrobeRole} aria-labelledby={`pairing-role-${group.wardrobeRole}`}>
+                  <header>
+                    <div>
+                      <h5 id={`pairing-role-${group.wardrobeRole}`}>{group.label}</h5>
+                      {group.alternative === "clothing" && (
+                        <small>Choose a top and bottom, or choose a one-piece garment.</small>
+                      )}
+                    </div>
+                    <span className={group.requirement === "optional" ? "optional" : "required"}>
+                      {group.requirement === "alternative" ? "Alternative" : group.requirement === "required" ? "Required" : "Optional"}
+                    </span>
+                  </header>
+
+                  {group.options.length ? (
+                    <>
+                    <div className="pairing-option-list" id={optionListId}>
+                      {displayedOptions.map((option) => {
+                        const selected = completeLook.selectedByRole[option.wardrobeRole]?.pieceId === option.pieceId;
+                        return (
+                          <button
+                            className={`pairing-option${selected ? " selected" : ""}`}
+                            type="button"
+                            key={option.pieceId}
+                            aria-pressed={selected}
+                            onClick={() => choosePairingOption(option)}
+                          >
+                            <span className="pairing-option-image">
+                              <OptimizedImage
+                                src={option.thumbnail || option.image}
+                                alt=""
+                                sizes="72px"
+                                breakpoints={[80, 120, 160]}
+                              />
+                              {selected && <span className="pairing-option-check"><Check size={13} weight="bold" aria-hidden="true" /></span>}
+                            </span>
+                            <span className="pairing-option-copy">
+                              <strong>{option.pieceName}</strong>
+                              {option.mapping.kind === "dictionary" ? (
+                                <small>
+                                  <span className="pairing-option-swatches" aria-hidden="true">
+                                    <i style={{ backgroundColor: option.mapping.garmentHex }} />
+                                    <i style={{ backgroundColor: option.mapping.dictionaryHex }} />
+                                  </span>
+                                  {option.mapping.garmentHex} is {option.mapping.relationship} {option.mapping.dictionaryColourName} ({option.mapping.dictionaryHex}) in Combination {option.referenceCombinationNumber}.
+                                </small>
+                              ) : (
+                                <small>
+                                  <span className="pairing-option-neutral-swatch" style={{ backgroundColor: option.mapping.garmentHex }} aria-hidden="true" />
+                                  {option.mapping.neutralName} · {option.mapping.label}
+                                </small>
+                              )}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {group.hasMore && (
+                      <button
+                        className="pairing-see-all"
+                        type="button"
+                        aria-expanded={isExpanded}
+                        aria-controls={optionListId}
+                        onClick={() => setExpandedRoles((current) => ({
+                          ...current,
+                          [group.wardrobeRole]: !isExpanded,
+                        }))}
+                      >
+                        {isExpanded ? "Show first six" : `See all ${group.totalOptionCount} ${group.label.toLowerCase()} options`}
+                      </button>
+                    )}
+                    </>
+                  ) : (
+                    <p className="pairing-role-empty">
+                      {group.requirement === "alternative"
+                        ? "No context-appropriate Pairing Options are available for this clothing path."
+                        : "No context-appropriate Pairing Options are available for this required role."}
+                    </p>
+                  )}
+                </section>
+                );
+              })}
+            </div>
+
+            <div className={`wearable-core-status${wearableCoreStatus.canSave ? " ready" : ""}`} role="status" aria-live="polite">
+              <div>
+                <strong>{wearableCoreStatus.label}</strong>
+                {wearableCoreStatus.canSave ? (
+                  <p>Your Wearable Core is complete and its selected pieces express {referenceCombination.label}.</p>
+                ) : (
+                  <ul>
+                    {wearableCoreStatus.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}
+                  </ul>
+                )}
+              </div>
+              <button
+                className={`look-save-readiness${wearableCoreStatus.canSave ? " ready" : ""}`}
+                type="button"
+                disabled={!wearableCoreStatus.canSave}
+                onClick={() => onSaveCompleteLook(completeLook, referenceCombination)}
+              >
+                {wearableCoreStatus.canSave && <Check size={15} weight="bold" aria-hidden="true" />}
+                Save and generate preview
+              </button>
+            </div>
+          </section>
+        </>
+      ) : (
+        <p className="look-builder-empty">
+          No Candidate Combinations are both close enough to this Anchor Colour and covered by wearable pieces in this wardrobe.
+        </p>
+      )}
+    </section>
+  );
+}
+
 function TagEditor({ tags, onChange }) {
   const [input, setInput] = useState("");
 
@@ -232,6 +759,10 @@ function ColorControl({ label, field, value, palette, onChange, sampling, setSam
     );
   }
 
+  const uniquePalette = palette.filter((color, index) => (
+    palette.findIndex((candidate) => candidate.toLowerCase() === color.toLowerCase()) === index
+  ));
+
   return (
     <div className="color-slot">
       <div className="color-slot-heading">
@@ -255,7 +786,7 @@ function ColorControl({ label, field, value, palette, onChange, sampling, setSam
         <small>Click to apply</small>
       </div>
       <div className="palette" aria-label={`${label} suggestions from image`}>
-        {palette.map((color) => (
+        {uniquePalette.map((color) => (
           <button
             type="button"
             key={color}
@@ -335,7 +866,7 @@ function ItemEditor({ draft, setDraft, palette, sampling, setSampling, sampleSta
   );
 }
 
-function ItemViewer({ item, onClose, onSave, onDelete }) {
+function ItemViewer({ item, items, onClose, onSave, onDelete, onSaveCompleteLook }) {
   const closeButtonRef = useRef(null);
   const imageRef = useRef(null);
   const samplingCanvasRef = useRef(null);
@@ -504,6 +1035,8 @@ function ItemViewer({ item, onClose, onSave, onDelete }) {
       )}
 
       <div className="viewer-details editing">
+        <LookBuilderPanel item={{ ...item, ...draft }} items={items} onSaveCompleteLook={onSaveCompleteLook} />
+
         <ItemEditor
           draft={draft}
           setDraft={setDraft}
@@ -522,7 +1055,7 @@ function ItemViewer({ item, onClose, onSave, onDelete }) {
           <span className="action-spacer" />
           <button className="secondary-button" type="button" onClick={cancelEditing}>Cancel</button>
           <button className="primary-button" type="button" onClick={saveEditing}>
-            <Check size={15} weight="bold" aria-hidden="true" /> Save
+            <Check size={15} weight="bold" aria-hidden="true" /> Save item
           </button>
         </div>
       </div>
@@ -532,19 +1065,31 @@ function ItemViewer({ item, onClose, onSave, onDelete }) {
   );
 }
 
-export function App() {
+export function App({
+  generateOutfitCopy = createGroundedOutfitCopy,
+  modeledPreviewService = DEFAULT_MODELED_PREVIEW_SERVICE,
+  loadWardrobe = loadWardrobeFromApi,
+  loadCuratedOutfits = loadCuratedOutfitsFromApi,
+  showImportFlow = true,
+  previewNotice = "",
+}) {
   const [items, setItems] = useState([]);
+  const [outfits, setOutfits] = useState([]);
+  const [savedOutfits, setSavedOutfits] = useState(() => readSavedOutfits());
+  const [activeView, setActiveView] = useState("wardrobe");
   const [activeType, setActiveType] = useState("all");
   const [selectedId, setSelectedId] = useState(null);
+  const [selectedOutfitId, setSelectedOutfitId] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [outfitLoading, setOutfitLoading] = useState(true);
   const [error, setError] = useState("");
+  const [outfitError, setOutfitError] = useState("");
+  const runningCopyGenerations = useRef(new Set());
+  const runningPreviewRequests = useRef(new Set());
+  const reconciledFailedPreviewJobs = useRef(new Set());
 
   useEffect(() => {
-    fetch("/api/import/wardrobe", { cache: "no-store" })
-      .then((response) => {
-        if (!response.ok) throw new Error("Could not load the wardrobe.");
-        return response.json();
-      })
+    loadWardrobe()
       .then((loadedItems) => {
         const edits = readEdits();
         const deleted = readDeletedItems();
@@ -553,9 +1098,18 @@ export function App() {
       })
       .catch((requestError) => setError(requestError.message))
       .finally(() => setLoading(false));
-  }, []);
+  }, [loadWardrobe]);
+
+  useEffect(() => {
+    loadCuratedOutfits()
+      .then((loadedOutfits) => setOutfits(readOutfitCollection(loadedOutfits, null).curated))
+      .catch((requestError) => setOutfitError(requestError.message))
+      .finally(() => setOutfitLoading(false));
+  }, [loadCuratedOutfits]);
 
   const selectedItem = items.find((item) => item.id === selectedId) || null;
+  const allOutfits = useMemo(() => [...savedOutfits, ...outfits], [outfits, savedOutfits]);
+  const selectedOutfit = allOutfits.find((outfit) => outfit.id === selectedOutfitId) || null;
 
   const visibleItems = useMemo(() => {
     const filtered = activeType === "all" ? items : items.filter((item) => item.part === activeType);
@@ -573,10 +1127,102 @@ export function App() {
     setSelectedId(null);
   };
 
+  const chooseView = (view) => {
+    setActiveView(view);
+    setSelectedId(null);
+    setSelectedOutfitId(null);
+  };
+
   const saveItem = (updatedItem) => {
     setItems((current) => current.map((item) => item.id === updatedItem.id ? updatedItem : item));
     persistEdit(updatedItem);
   };
+
+  const persistSavedOutfits = useCallback((updater) => {
+    setSavedOutfits((current) => {
+      const next = typeof updater === "function" ? updater(current) : updater;
+      const sorted = [...next].sort((first, second) => second.createdAt.localeCompare(first.createdAt));
+      writeSavedOutfits(sorted);
+      return sorted;
+    });
+  }, []);
+
+  useEffect(() => {
+    savedOutfits
+      .filter((outfit) => outfit.copyGeneration?.status === "generating")
+      .forEach((outfit) => {
+        if (runningCopyGenerations.current.has(outfit.id)) return;
+        runningCopyGenerations.current.add(outfit.id);
+
+        generateSavedOutfitCopy(outfit, generateOutfitCopy)
+          .then((nextOutfit) => {
+            persistSavedOutfits((current) => current.map((candidate) => (
+              candidate.id === outfit.id && candidate.copyGeneration?.status === "generating"
+                ? {
+                  ...candidate,
+                  name: candidate.nameSource === "user" ? candidate.name : nextOutfit.name,
+                  nameSource: candidate.nameSource === "user" ? "user" : nextOutfit.nameSource,
+                  description: nextOutfit.description,
+                  copyGeneration: nextOutfit.copyGeneration,
+                }
+                : candidate
+            )));
+          })
+          .finally(() => runningCopyGenerations.current.delete(outfit.id));
+      });
+  }, [generateOutfitCopy, persistSavedOutfits, savedOutfits]);
+
+  useEffect(() => {
+    const timerIds = [];
+    const updatePreview = (outfitId, job) => persistSavedOutfits((current) => current.map((candidate) => (
+      candidate.id === outfitId && !candidate.incomplete?.missingGarmentIds?.length
+        ? applyModeledPreviewJob(candidate, job)
+        : candidate
+    )));
+
+    savedOutfits
+      .filter((outfit) => !outfit.incomplete?.missingGarmentIds?.length && outfit.generation?.status === "generating" && !outfit.generation.jobId)
+      .forEach((outfit) => {
+        const requestId = `start:${outfit.id}`;
+        if (runningPreviewRequests.current.has(requestId)) return;
+        runningPreviewRequests.current.add(requestId);
+        modeledPreviewService.start(outfit)
+          .then((job) => updatePreview(outfit.id, job))
+          .catch((error) => updatePreview(outfit.id, { status: "failed", error: error.message }))
+          .finally(() => runningPreviewRequests.current.delete(requestId));
+      });
+
+    savedOutfits
+      .filter((outfit) => !outfit.incomplete?.missingGarmentIds?.length && ["generating", "reviewing"].includes(outfit.generation?.status) && outfit.generation?.jobId)
+      .forEach((outfit) => {
+        const requestId = `read:${outfit.generation.jobId}`;
+        if (runningPreviewRequests.current.has(requestId)) return;
+        const timer = setTimeout(() => {
+          runningPreviewRequests.current.add(requestId);
+          modeledPreviewService.read(outfit.generation.jobId)
+            .then((job) => updatePreview(outfit.id, job))
+            .catch((error) => updatePreview(outfit.id, { id: outfit.generation.jobId, status: "failed", error: error.message }))
+            .finally(() => runningPreviewRequests.current.delete(requestId));
+        }, 450);
+        timerIds.push(timer);
+      });
+
+    // A local service can finish or be corrected while the browser still holds
+    // a persisted failure. Reconcile that job once when the app loads so a
+    // validated image is not kept hidden behind stale browser state.
+    savedOutfits
+      .filter((outfit) => !outfit.incomplete?.missingGarmentIds?.length && outfit.generation?.status === "failed" && outfit.generation?.jobId)
+      .forEach((outfit) => {
+        const requestId = `reconcile:${outfit.generation.jobId}`;
+        if (reconciledFailedPreviewJobs.current.has(requestId)) return;
+        reconciledFailedPreviewJobs.current.add(requestId);
+        modeledPreviewService.read(outfit.generation.jobId)
+          .then((job) => updatePreview(outfit.id, job))
+          .catch(() => {});
+      });
+
+    return () => timerIds.forEach(clearTimeout);
+  }, [modeledPreviewService, persistSavedOutfits, savedOutfits]);
 
   const deleteItem = async (id) => {
     if (id.startsWith("import-")) {
@@ -589,6 +1235,7 @@ export function App() {
       }
     }
     setItems((current) => current.filter((item) => item.id !== id));
+    persistSavedOutfits((current) => markSavedOutfitsIncomplete(current, id));
     removePersistedEdit(id);
     persistDeletedItem(id);
     setSelectedId(null);
@@ -603,48 +1250,147 @@ export function App() {
     setItems((current) => current.map((item) => item.id === id ? { ...item, modeledImage } : item));
   }, []);
 
+  const saveCompleteLook = (completeLook, referenceCombination) => {
+    try {
+      const savedOutfit = createSavedOutfit(completeLook, referenceCombination);
+      persistSavedOutfits((current) => [savedOutfit, ...current]);
+      setOutfitError("");
+      setActiveView("outfits");
+    } catch {
+      setOutfitError("Could not save this Complete Look. Please try again.");
+    }
+  };
+
+  const renameOutfit = (id, name) => {
+    persistSavedOutfits((current) => current.map((outfit) => (
+      outfit.id === id ? renameSavedOutfit(outfit, name) : outfit
+    )));
+  };
+
+  const retryOutfitCopy = (id) => {
+    persistSavedOutfits((current) => current.map((outfit) => (
+      outfit.id === id ? retrySavedOutfitCopy(outfit) : outfit
+    )));
+  };
+
+  const retryOutfitPreview = (id) => {
+    persistSavedOutfits((current) => current.map((outfit) => (
+      outfit.id === id && !outfit.incomplete?.missingGarmentIds?.length ? restartSavedOutfitPreview(outfit) : outfit
+    )));
+  };
+
+  const deleteOutfit = async (id) => {
+    const outfit = savedOutfits.find((candidate) => candidate.id === id);
+    if (outfit?.generation?.jobId && modeledPreviewService.remove) {
+      try {
+        await modeledPreviewService.remove(outfit.generation.jobId);
+      } catch (requestError) {
+        setOutfitError(requestError.message || "Could not delete the Modeled Preview.");
+        return;
+      }
+    }
+    persistSavedOutfits((current) => deleteSavedOutfit(current, id));
+    setSelectedOutfitId(null);
+  };
+
   return (
     <div className={`app-shell${selectedItem ? " has-selection" : ""}`}>
       <main className="gallery-pane">
         <header className="gallery-header">
           <div className="gallery-meta-row">
-            <p className="piece-count">{items.length} {items.length === 1 ? "piece" : "pieces"}</p>
-          </div>
-          <nav className="category-nav" aria-label="Filter wardrobe by item type">
-            {TYPES.map((type) => (
+            <p className="piece-count">{activeView === "wardrobe" ? `${items.length} ${items.length === 1 ? "piece" : "pieces"}` : `${allOutfits.length} ${allOutfits.length === 1 ? "look" : "looks"}`}</p>
+            <nav className="view-nav" aria-label="Choose collection" role="tablist">
               <button
-                key={type.id}
                 type="button"
-                className={activeType === type.id ? "active" : ""}
-                onClick={() => chooseType(type.id)}
-                aria-pressed={activeType === type.id}
+                className={activeView === "wardrobe" ? "active" : ""}
+                onClick={() => chooseView("wardrobe")}
+                aria-selected={activeView === "wardrobe"}
+                role="tab"
               >
-                {type.label}
+                Wardrobe
               </button>
-            ))}
-          </nav>
+              <button
+                type="button"
+                className={activeView === "outfits" ? "active" : ""}
+                onClick={() => chooseView("outfits")}
+                aria-selected={activeView === "outfits"}
+                role="tab"
+              >
+                Outfits
+                {allOutfits.length > 0 && <span className="view-nav-count">{allOutfits.length}</span>}
+              </button>
+            </nav>
+          </div>
+          {activeView === "wardrobe" && (
+            <nav className="category-nav" aria-label="Filter wardrobe by item type">
+              {TYPES.map((type) => (
+                <button
+                  key={type.id}
+                  type="button"
+                  className={activeType === type.id ? "active" : ""}
+                  onClick={() => chooseType(type.id)}
+                  aria-pressed={activeType === type.id}
+                >
+                  {type.label}
+                </button>
+              ))}
+            </nav>
+          )}
+          {previewNotice && <p className="preview-notice" role="status">{previewNotice}</p>}
         </header>
 
-        {error && <p className="status error">{error}</p>}
-        {!error && loading && <p className="status">Loading wardrobe</p>}
-        {!error && !loading && !items.length && <p className="status empty">Drop, paste, or add a photo to import your first piece.</p>}
+        {activeView === "wardrobe" && (
+          <>
+            {error && <p className="status error">{error}</p>}
+            {!error && loading && <p className="status">Loading wardrobe</p>}
+            {!error && !loading && !items.length && <p className="status empty">Drop, paste, or add a photo to import your first piece.</p>}
+            {!!items.length && (
+              <section className="gallery-grid" aria-label={`${TYPE_MAP[activeType]?.label || "All"} wardrobe items`}>
+                {visibleItems.map((item) => (
+                  <GalleryItem
+                    key={item.id}
+                    item={item}
+                    selected={selectedId === item.id}
+                    onOpen={setSelectedId}
+                  />
+                ))}
+              </section>
+            )}
+          </>
+        )}
 
-        {!!items.length && (
-          <section className="gallery-grid" aria-label={`${TYPE_MAP[activeType]?.label || "All"} wardrobe items`}>
-            {visibleItems.map((item) => (
-              <GalleryItem
-                key={item.id}
-                item={item}
-                selected={selectedId === item.id}
-                onOpen={setSelectedId}
-              />
-            ))}
-          </section>
+        {activeView === "outfits" && (
+          <>
+            {outfitError && <p className="status error">{outfitError}</p>}
+            {!outfitError && outfitLoading && <p className="status">Loading outfit ideas</p>}
+            {!outfitError && !outfitLoading && !allOutfits.length && <p className="status empty">Save a Complete Look or generate an outfit collection to see modeled looks here.</p>}
+            {!!allOutfits.length && (
+              <div className="outfits-collections">
+                <section className="outfit-section" aria-labelledby="saved-outfits-title">
+                  <header><p>Saved from your wardrobe</p><h2 id="saved-outfits-title">Saved from your wardrobe</h2></header>
+                  {savedOutfits.length ? (
+                    <div className="outfit-grid" aria-label="Saved from your wardrobe">
+                      {savedOutfits.map((outfit) => <OutfitCard key={outfit.id} outfit={outfit} selected={selectedOutfitId === outfit.id} onOpen={setSelectedOutfitId} />)}
+                    </div>
+                  ) : <p className="outfit-section-empty">Complete Looks you save will appear here.</p>}
+                </section>
+                <section className="outfit-section" aria-labelledby="curated-outfits-title">
+                  <header><p>Curated looks</p><h2 id="curated-outfits-title">Curated looks</h2></header>
+                  {outfits.length ? (
+                    <div className="outfit-grid" aria-label="Curated looks">
+                      {outfits.map((outfit) => <OutfitCard key={outfit.id} outfit={outfit} selected={selectedOutfitId === outfit.id} onOpen={setSelectedOutfitId} />)}
+                    </div>
+                  ) : <p className="outfit-section-empty">No curated looks are available yet.</p>}
+                </section>
+              </div>
+            )}
+          </>
         )}
       </main>
 
-      {selectedItem && <ItemViewer item={selectedItem} onClose={() => setSelectedId(null)} onSave={saveItem} onDelete={deleteItem} />}
-      <WardrobeImportFlow onGarmentApproved={addImportedItem} onModeledApproved={attachImportedModeledImage} />
+      {selectedItem && <ItemViewer item={selectedItem} items={items} onClose={() => setSelectedId(null)} onSave={saveItem} onDelete={deleteItem} onSaveCompleteLook={saveCompleteLook} />}
+      {selectedOutfit && <OutfitViewer outfit={selectedOutfit} items={items} onClose={() => setSelectedOutfitId(null)} onDelete={deleteOutfit} onRename={renameOutfit} onRetryCopy={retryOutfitCopy} onRetryPreview={retryOutfitPreview} />}
+      {showImportFlow && <WardrobeImportFlow onGarmentApproved={addImportedItem} onModeledApproved={attachImportedModeledImage} />}
     </div>
   );
 }

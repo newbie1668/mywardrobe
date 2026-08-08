@@ -8,18 +8,28 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:public-preview": "VITE_PUBLIC_FIXTURE_PREVIEW=true vite build",
     "preview": "vite preview",
-    "check": "npm run build"
+    "check": "npm run build",
+    "check:public-preview": "npm run build:public-preview",
+    "test": "vitest run",
+    "test:browser": "playwright test",
+    "test:public-preview": "PUBLIC_PREVIEW_E2E=true playwright test tests/browser/public-preview.spec.js"
   },
   "dependencies": {
     "@fontsource-variable/instrument-sans": "^5.2.8",
     "@phosphor-icons/react": "^2.1.10",
     "@unpic/react": "^1.0.2",
     "@vitejs/plugin-react": "5.0.4",
+    "dictionary-of-colour-combinations": "^1.0.2",
     "ipx": "^3.1.1",
     "react": "19.2.0",
     "react-dom": "19.2.0",
     "sharp": "^0.34.5",
     "vite": "6.4.3"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "vitest": "^3.2.4"
   }
 }

@@ -2,14 +2,26 @@ import { randomUUID } from "node:crypto";
 import { copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
+import { resolveModeledPreviewReview } from "../src/modeled-preview-review.js";
 
 const API_ROOT = "/api/import/jobs";
 const ASSET_ROOT = "/api/import/assets";
 const LIBRARY_ASSET_ROOT = "/api/import/library";
+const OUTFIT_API_ROOT = "/api/import/outfits";
+const MODELED_PREVIEW_API_ROOT = "/api/import/modeled-previews";
 const STAGES = new Set(["crop", "garment", "modeled"]);
 const DECISIONS = new Set(["approve", "reject"]);
 const PARTS = new Set(["upperbody", "wholebody_up", "lowerbody", "accessories_up", "shoes"]);
 const HEX_COLOR = /^#[0-9a-f]{6}$/i;
+const OUTFIT_IMAGE_FILE = /^[a-z0-9][a-z0-9._-]*\.png$/i;
+const MODELED_PREVIEW_ID = /^preview-[a-f0-9-]{36}$/i;
+
+function outfitImageName(outfit) {
+  const candidate = typeof outfit?.image === "string" ? path.basename(outfit.image) : "";
+  if (OUTFIT_IMAGE_FILE.test(candidate)) return candidate;
+  const id = typeof outfit?.id === "string" ? outfit.id : "";
+  return /^[a-z0-9-]+$/i.test(id) ? `${id}.png` : null;
+}
 
 function json(res, status, value) {
   res.statusCode = status;
@@ -340,12 +352,64 @@ async function openAIAnalyze({ key, baseUrl, model, image, mime }) {
   return parsed.items;
 }
 
+async function reviewModeledPreview({ key, baseUrl, model, preview, modelReference, garments, priorRejectionReasons = null }) {
+  const image = (value) => ({ type: "input_image", image_url: `data:image/png;base64,${value.toString("base64")}`, detail: "high" });
+  const garmentList = garments.map(({ name }, index) => `Image ${index + 3}: ${name}`).join("; ");
+  const confirmationContext = Array.isArray(priorRejectionReasons)
+    ? `A first review rejected this candidate for: ${priorRejectionReasons.join(" ") || "unspecified reasons"}. Independently adjudicate that decision; it may be wrong. Do not repeat a claimed mismatch unless it is directly visible in the candidate. `
+    : "";
+  const response = await fetch(`${baseUrl}/responses`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model,
+      input: [{ role: "user", content: [
+        {
+          type: "input_text",
+          text: `Review a proposed Modeled Preview. ${confirmationContext}The first image after this text is the generated candidate and is exactly 1024 by 1024 square; assess framing only from that first image. Determine whether the entire head, legs, and footwear are visibly inside its canvas. Do not infer cropping merely from a close composition or subject position. The second image is an identity reference, not a garment reference. ${garmentList}. Accept when the generated candidate is a full-body view with recognizable identity and every selected garment visible, matching its supplied colour and construction. Reject only direct visual evidence of identity drift, missing selected garments, changed garment colours or construction, invented visible clothing, unrealistic anatomy, or genuinely cropped/incomplete framing. Return concise factual reasons.`,
+        },
+        image(preview),
+        image(modelReference),
+        ...garments.map(({ data }) => image(data)),
+      ] }],
+      text: {
+        format: {
+          type: "json_schema",
+          name: "saved_preview_review",
+          strict: true,
+          schema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              accepted: { type: "boolean" },
+              reasons: { type: "array", maxItems: 8, items: { type: "string" } },
+            },
+            required: ["accepted", "reasons"],
+          },
+        },
+      },
+    }),
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(result.error?.message || `Modeled Preview review failed (${response.status})`);
+  const outputText = result.output_text || result.output?.flatMap((item) => item.content || []).find((item) => item.type === "output_text")?.text;
+  if (!outputText) throw new Error("Modeled Preview review returned no structured result");
+  const review = JSON.parse(outputText);
+  if (typeof review.accepted !== "boolean" || !Array.isArray(review.reasons)) throw new Error("Modeled Preview review returned an invalid result");
+  return { accepted: review.accepted, reasons: review.reasons.filter((reason) => typeof reason === "string").slice(0, 8) };
+}
+
 export function wardrobeImportApi(options = {}) {
   let root;
   let jobsDir;
   let importedFile;
   let libraryAssetDir;
+  let outfitsFile;
+  let outfitImageDir;
+  let modeledPreviewDir;
   const running = new Map();
+  const cancelledModeledPreviewJobs = new Set();
+  const modeledPreviewMutations = new Map();
   const setting = (name, fallback = "") => options.env?.[name] || process.env[name] || fallback;
   const apiBaseUrl = () => setting("OPENAI_API_BASE_URL", "https://api.openai.com/v1").replace(/\/$/, "");
 
@@ -381,6 +445,181 @@ export function wardrobeImportApi(options = {}) {
   async function loadImported() {
     try { return JSON.parse(await readFile(importedFile, "utf8")); }
     catch (error) { if (error.code === "ENOENT") return []; throw error; }
+  }
+
+  async function loadModeledPreviewJob(id) {
+    if (!MODELED_PREVIEW_ID.test(id)) return null;
+    try { return JSON.parse(await readFile(path.join(modeledPreviewDir, `${id}.json`), "utf8")); }
+    catch (error) { if (error.code === "ENOENT") return null; throw error; }
+  }
+
+  async function saveModeledPreviewJob(job) {
+    job.updatedAt = new Date().toISOString();
+    await atomicJson(path.join(modeledPreviewDir, `${job.id}.json`), job);
+  }
+
+  async function mutateModeledPreview(id, mutation) {
+    const previous = modeledPreviewMutations.get(id) || Promise.resolve();
+    const next = previous.catch(() => {}).then(mutation);
+    modeledPreviewMutations.set(id, next);
+    try {
+      return await next;
+    } finally {
+      if (modeledPreviewMutations.get(id) === next) modeledPreviewMutations.delete(id);
+    }
+  }
+
+  function publicModeledPreviewJob(job) {
+    return {
+      id: job.id,
+      status: job.status,
+      attempts: job.attempts,
+      image: job.status === "ready" && job.imageFile ? `${MODELED_PREVIEW_API_ROOT}/${job.id}/image` : null,
+      error: job.status === "failed" ? job.error || "Modeled Preview could not be generated." : null,
+      review: job.review || null,
+      createdAt: job.createdAt,
+      updatedAt: job.updatedAt,
+    };
+  }
+
+  function selectedGarmentIds(outfit) {
+    const selections = outfit?.selectedGarmentsByRole && typeof outfit.selectedGarmentsByRole === "object"
+      ? Object.values(outfit.selectedGarmentsByRole)
+      : [];
+    const ids = selections.map((selection) => selection?.pieceId).filter((id) => typeof id === "string");
+    return [...new Set(ids)];
+  }
+
+  async function selectedGarmentsForPreview(ids) {
+    const imported = await loadImported();
+    const byId = new Map(imported.map((record) => [record.id, record]));
+    const records = ids.map((id) => byId.get(id));
+    if (!records.length || records.some((record) => !record)) {
+      throw Object.assign(new Error("A selected wardrobe piece is no longer available for this Modeled Preview."), { status: 409 });
+    }
+    return Promise.all(records.map(async (record) => {
+      const fileName = path.basename(record.image || "");
+      if (!fileName || fileName !== record.image?.split("/").at(-1)) throw new Error("A selected garment image is unavailable for this Modeled Preview.");
+      return {
+        name: record.name || "selected garment",
+        data: await readFile(path.join(libraryAssetDir, fileName)),
+        mime: "image/png",
+        color: record.color || null,
+        part: record.part || "wardrobe item",
+        tags: Array.isArray(record.tags) ? record.tags : [],
+      };
+    }));
+  }
+
+  function modeledPreviewPrompt(garments) {
+    const garmentReferences = garments.map(({ name, color, part, tags }, index) => (
+      `Image ${index + 2} is ${name} (${part}${color ? `, primary colour ${color}` : ""}${tags?.length ? `, details: ${tags.join(", ")}` : ""})`
+    )).join(". ");
+    return `Create a square 1:1, full-body editorial fashion photograph of the person in Image 1 wearing every exact garment shown in the following reference images. ${garmentReferences}. Use Image 1 only for recognizable identity, face, hair, age, and body proportions; do not copy any clothing, accessories, name badges, watches, belts, logos, or objects from Image 1 unless they also appear in a selected garment reference. Preserve every selected garment's visible colour, material, fit, construction, graphics, logos, and distinctive details. Show the complete look unobstructed from head to footwear. Do not add, remove, substitute, or conceal selected clothing. Use a restrained real-world setting and natural light. No text, watermark, collage, product mockup, cropped body, or synthetic appearance.`;
+  }
+
+  async function generateModeledPreview(job) {
+    const lock = `modeled-preview:${job.id}`;
+    if (running.has(lock)) return running.get(lock);
+    const task = (async () => {
+      const current = await mutateModeledPreview(job.id, async () => {
+        if (cancelledModeledPreviewJobs.has(job.id)) return null;
+        const next = await loadModeledPreviewJob(job.id);
+        if (!next || !["generating", "reviewing"].includes(next.status)) return null;
+        next.status = "generating";
+        next.error = null;
+        next.review = null;
+        next.attempts = (next.attempts || 0) + 1;
+        await saveModeledPreviewJob(next);
+        return next;
+      });
+      if (!current) return;
+      try {
+        const setup = await setupStatus();
+        if (!setup.ready) throw new Error("Modeled Preview setup is incomplete. Add the API key and identity reference, then retry.");
+        const key = setting("OPENAI_API_KEY");
+        const modelPath = path.resolve(root, setting("WARDROBE_MODEL_REFERENCE", "data/model-reference.png"));
+        const modelReference = await readFile(modelPath);
+        const garments = await selectedGarmentsForPreview(current.selectedGarmentIds);
+        const bytes = await openAIEdit({
+          key,
+          baseUrl: apiBaseUrl(),
+          model: setting("OPENAI_MODELED_MODEL", setting("OPENAI_IMAGE_MODEL", "gpt-image-2")),
+          quality: setting("OPENAI_IMAGE_QUALITY", "high"),
+          size: "1024x1024",
+          images: [{ data: modelReference, mime: "image/png", name: "identity-reference.png" }, ...garments],
+          prompt: modeledPreviewPrompt(garments),
+        });
+        const imageFile = `${current.id}-${current.attempts}.png`;
+        const persistedForReview = await mutateModeledPreview(current.id, async () => {
+          if (cancelledModeledPreviewJobs.has(current.id)) return false;
+          const reviewing = await loadModeledPreviewJob(current.id);
+          if (!reviewing) return false;
+          await writeFile(path.join(outfitImageDir, imageFile), bytes);
+          reviewing.status = "reviewing";
+          reviewing.imageFile = imageFile;
+          await saveModeledPreviewJob(reviewing);
+          return true;
+        });
+        if (!persistedForReview) return;
+        const firstReview = await reviewModeledPreview({
+          key,
+          baseUrl: apiBaseUrl(),
+          model: setting("OPENAI_VISION_MODEL", "gpt-5.4-mini"),
+          preview: bytes,
+          modelReference,
+          garments,
+        });
+        const review = firstReview.accepted
+          ? firstReview
+          : resolveModeledPreviewReview(firstReview, await reviewModeledPreview({
+            key,
+            baseUrl: apiBaseUrl(),
+            model: setting("OPENAI_VISION_MODEL", "gpt-5.4-mini"),
+            preview: bytes,
+            modelReference,
+            garments,
+            priorRejectionReasons: firstReview.reasons,
+          }));
+        await mutateModeledPreview(current.id, async () => {
+          if (cancelledModeledPreviewJobs.has(current.id)) return;
+          const completed = await loadModeledPreviewJob(current.id);
+          if (!completed) return;
+          completed.review = review;
+          completed.status = review.accepted ? "ready" : "failed";
+          completed.error = review.accepted ? null : "The fidelity review could not confirm this Modeled Preview.";
+          await saveModeledPreviewJob(completed);
+        });
+      } catch (error) {
+        await mutateModeledPreview(current.id, async () => {
+          if (cancelledModeledPreviewJobs.has(current.id)) return;
+          const failed = await loadModeledPreviewJob(current.id);
+          if (!failed) return;
+          failed.status = "failed";
+          failed.error = error.message || "Modeled Preview could not be generated.";
+          await saveModeledPreviewJob(failed);
+        });
+      }
+    })().finally(() => {
+      running.delete(lock);
+      cancelledModeledPreviewJobs.delete(job.id);
+    });
+    running.set(lock, task);
+    return task;
+  }
+
+  async function recoverInterruptedModeledPreviews() {
+    const modeledPreviewFiles = await readdir(modeledPreviewDir).catch(() => []);
+    await Promise.all(modeledPreviewFiles
+      .filter((file) => file.endsWith(".json"))
+      .map(async (file) => {
+        const job = await loadModeledPreviewJob(path.basename(file, ".json"));
+        if (!job || !["generating", "reviewing"].includes(job.status)) return;
+        job.status = "failed";
+        job.error = "The local preview service restarted before this Modeled Preview finished. Retry to start a fresh attempt.";
+        job.recoveredAt = new Date().toISOString();
+        await saveModeledPreviewJob(job);
+      }));
   }
 
   async function persistImported(job, includeModeled = false) {
@@ -493,6 +732,80 @@ export function wardrobeImportApi(options = {}) {
     try {
       if (url.pathname === "/api/import/wardrobe" && req.method === "GET") {
         return json(res, 200, await loadImported());
+      }
+      if (url.pathname === OUTFIT_API_ROOT && req.method === "GET") {
+        let manifest = { version: 1, outfits: [] };
+        try {
+          manifest = JSON.parse(await readFile(outfitsFile, "utf8"));
+        } catch (error) {
+          if (error.code !== "ENOENT") throw error;
+        }
+        const outfits = Array.isArray(manifest.outfits)
+          ? manifest.outfits.map((outfit) => {
+            const imageName = outfitImageName(outfit);
+            return {
+              ...outfit,
+              ...(imageName ? { image: `${OUTFIT_API_ROOT}/${encodeURIComponent(imageName)}` } : {}),
+            };
+          })
+          : [];
+        return json(res, 200, { version: manifest.version || 1, outfits });
+      }
+      const outfitImageMatch = url.pathname.match(/^\/api\/import\/outfits\/([a-z0-9][a-z0-9._-]*\.png)$/i);
+      if (outfitImageMatch && req.method === "GET") {
+        const file = path.join(outfitImageDir, path.basename(outfitImageMatch[1]));
+        await stat(file);
+        res.setHeader("Content-Type", "image/png");
+        res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+        return res.end(await readFile(file));
+      }
+      if (url.pathname === MODELED_PREVIEW_API_ROOT && req.method === "POST") {
+        const input = await body(req);
+        const ids = selectedGarmentIds(input.outfit);
+        if (!ids.length) return json(res, 400, { error: "A Modeled Preview needs at least one selected wardrobe piece." });
+        await selectedGarmentsForPreview(ids);
+        const now = new Date().toISOString();
+        const job = {
+          id: `preview-${randomUUID()}`,
+          status: "generating",
+          attempts: 0,
+          selectedGarmentIds: ids,
+          imageFile: null,
+          error: null,
+          review: null,
+          createdAt: now,
+          updatedAt: now,
+        };
+        await saveModeledPreviewJob(job);
+        void generateModeledPreview(job);
+        return json(res, 202, publicModeledPreviewJob(job));
+      }
+      const modeledPreviewMatch = url.pathname.match(/^\/api\/import\/modeled-previews\/(preview-[a-f0-9-]{36})(?:\/(image))?$/i);
+      if (modeledPreviewMatch) {
+        const [, id, action] = modeledPreviewMatch;
+        if (!action && req.method === "DELETE") {
+          const lock = `modeled-preview:${id}`;
+          await mutateModeledPreview(id, async () => {
+            cancelledModeledPreviewJobs.add(id);
+            const job = await loadModeledPreviewJob(id);
+            if (job?.imageFile) await rm(path.join(outfitImageDir, path.basename(job.imageFile)), { force: true });
+            await rm(path.join(modeledPreviewDir, `${id}.json`), { force: true });
+          });
+          if (!running.has(lock)) cancelledModeledPreviewJobs.delete(id);
+          return json(res, 200, { deleted: true, id });
+        }
+        const job = await loadModeledPreviewJob(id);
+        if (!job) return json(res, 404, { error: "Modeled Preview job not found" });
+        if (action === "image" && req.method === "GET") {
+          if (job.status !== "ready" || !job.imageFile) return json(res, 409, { error: "Modeled Preview is not ready" });
+          const file = path.join(outfitImageDir, path.basename(job.imageFile));
+          await stat(file);
+          res.setHeader("Content-Type", "image/png");
+          res.setHeader("Cache-Control", "no-store");
+          return res.end(await readFile(file));
+        }
+        if (!action && req.method === "GET") return json(res, 200, publicModeledPreviewJob(job));
+        return json(res, 404, { error: "Not found" });
       }
       if (url.pathname === "/api/import/config" && req.method === "GET") {
         return json(res, 200, await setupStatus());
@@ -670,8 +983,14 @@ export function wardrobeImportApi(options = {}) {
       jobsDir = path.join(dataDir, "jobs");
       importedFile = path.join(dataDir, "library.json");
       libraryAssetDir = path.join(dataDir, "imported");
+      outfitsFile = path.join(dataDir, "outfits.json");
+      outfitImageDir = path.join(dataDir, "outfit-images");
+      modeledPreviewDir = path.join(dataDir, "modeled-preview-jobs");
       await mkdir(jobsDir, { recursive: true });
       await mkdir(libraryAssetDir, { recursive: true });
+      await mkdir(outfitImageDir, { recursive: true });
+      await mkdir(modeledPreviewDir, { recursive: true });
+      await recoverInterruptedModeledPreviews();
       const ids = await readdir(jobsDir).catch(() => []);
       for (const id of ids) {
         const job = await loadJob(id);

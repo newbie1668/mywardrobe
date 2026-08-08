@@ -6,3 +6,7 @@ dist/
 !.env.example
 *.log
 data/
+playwright-report/
+test-results/
+.playwright-data/
+.vercel/
