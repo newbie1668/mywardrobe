@@ -387,7 +387,7 @@ function LookBuilderPanel({ item, items }) {
                 ? `${combinationChangeNotice.retainedCount} compatible ${combinationChangeNotice.retainedCount === 1 ? "selection was" : "selections were"} kept.`
                 : combinationChangeNotice.hasCandidate
                   ? "Choose new Pairing Options below."
-                  : "Adjust the Anchor Colours to find a new Candidate Combination."}</p>
+                  : "Adjust the Anchor Colour or secondary colour to find a new Candidate Combination."}</p>
             </>
           ) : (
             <p>{combinationChangeNotice.retainedCount ? `Kept ${combinationChangeNotice.retainedCount} compatible ${combinationChangeNotice.retainedCount === 1 ? "selection" : "selections"}.` : "No garment selections needed to change."}</p>

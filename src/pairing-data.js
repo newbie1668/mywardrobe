@@ -513,35 +513,8 @@ export function switchReferenceCombination(completeLook, referenceCombination) {
     return { completeLook, retainedSelections: [], removedSelections: [] };
   }
 
-  if (!referenceCombination) {
-    const selectedByRole = {};
-    const removedSelections = [];
-    for (const [wardrobeRole, selection] of Object.entries(completeLook.selectedByRole || {})) {
-      if (selection.isAnchor) {
-        selectedByRole[wardrobeRole] = { ...selection, referenceCombinationNumber: null };
-      } else {
-        removedSelections.push({
-          pieceId: selection.pieceId,
-          pieceName: selection.pieceName,
-          wardrobeRole,
-          roleLabel: selection.roleLabel || ROLE_LABELS[wardrobeRole] || wardrobeRole,
-          reason: `${selection.pieceName} was removed because no Candidate Combination is available for this Anchor Piece.`,
-        });
-      }
-    }
-    return {
-      completeLook: {
-        ...completeLook,
-        referenceCombinationNumber: null,
-        selectedByRole,
-      },
-      retainedSelections: [],
-      removedSelections,
-    };
-  }
-
-  const referenceCombinationNumber = referenceCombination.combinationNumber;
-  const validOptionsByRole = new Map(referenceCombination.pairingOptionGroups.map((group) => [
+  const referenceCombinationNumber = referenceCombination?.combinationNumber || null;
+  const validOptionsByRole = new Map((referenceCombination?.pairingOptionGroups || []).map((group) => [
     group.wardrobeRole,
     new Map(group.allOptions.map((option) => [option.pieceId, option])),
   ]));
@@ -555,7 +528,9 @@ export function switchReferenceCombination(completeLook, referenceCombination) {
       continue;
     }
 
-    const retainedOption = validOptionsByRole.get(wardrobeRole)?.get(selection.pieceId);
+    const retainedOption = referenceCombination
+      ? validOptionsByRole.get(wardrobeRole)?.get(selection.pieceId)
+      : null;
     if (retainedOption) {
       selectedByRole[wardrobeRole] = { ...retainedOption, isAnchor: false };
       retainedSelections.push(selectedByRole[wardrobeRole]);
@@ -568,7 +543,9 @@ export function switchReferenceCombination(completeLook, referenceCombination) {
       pieceName: selection.pieceName,
       wardrobeRole,
       roleLabel,
-      reason: `${selection.pieceName} is not a valid ${roleLabel} Pairing Option for Combination ${referenceCombinationNumber}.`,
+      reason: referenceCombination
+        ? `${selection.pieceName} is not a valid ${roleLabel} Pairing Option for Combination ${referenceCombinationNumber}.`
+        : `${selection.pieceName} was removed because no Candidate Combination is available for this Anchor Piece.`,
     });
   }
 
