@@ -272,6 +272,13 @@ function OutfitViewer({ outfit, items, onClose }) {
 function LookBuilderPanel({ item, items }) {
   const lookBuilder = useMemo(() => getLookBuilder(item, items), [item, items]);
   const defaultCombinationNumber = lookBuilder.candidates[0]?.combinationNumber || null;
+  const candidateRevision = lookBuilder.candidates.map((candidate) => (
+    `${candidate.combinationNumber}:${candidate.pairingOptionGroups.map((group) => (
+      `${group.wardrobeRole}=${group.allOptions.map((option) => (
+        `${option.pieceId}:${option.pieceName}:${option.mapping.kind}:${option.mapping.garmentHex}:${option.mapping.dictionaryHex || option.mapping.neutralName}`
+      )).join(",")}`
+    )).join(";")}`
+  )).join("|");
   const [referenceCombinationNumber, setReferenceCombinationNumber] = useState(defaultCombinationNumber);
   const [completeLook, setCompleteLook] = useState(() => createCompleteLook(item, defaultCombinationNumber));
   const [expandedRoles, setExpandedRoles] = useState({});
@@ -280,14 +287,40 @@ function LookBuilderPanel({ item, items }) {
     combinationNumber === referenceCombinationNumber
   )) || lookBuilder.candidates[0] || null;
   const combinationGuide = referenceCombination?.combinationGuide || null;
-  const wearableCoreStatus = useMemo(() => getWearableCoreStatus(completeLook), [completeLook]);
+  const wearableCoreStatus = useMemo(() => (
+    getWearableCoreStatus(completeLook, referenceCombination)
+  ), [completeLook, referenceCombination]);
 
   useEffect(() => {
-    setReferenceCombinationNumber(defaultCombinationNumber);
-    setCompleteLook(createCompleteLook(item, defaultCombinationNumber));
-    setExpandedRoles({});
-    setCombinationChangeNotice(null);
-  }, [defaultCombinationNumber, item.id, item.part]);
+    const initialLook = createCompleteLook(item, defaultCombinationNumber);
+    const sameAnchor = completeLook.anchorPieceId === item.id && completeLook.anchorRole === initialLook.anchorRole;
+    const activeCandidate = sameAnchor ? lookBuilder.candidates.find(({ combinationNumber }) => (
+      combinationNumber === referenceCombinationNumber
+    )) : null;
+    const nextCandidate = activeCandidate || lookBuilder.candidates[0] || null;
+    const nextCombinationNumber = nextCandidate?.combinationNumber || null;
+
+    if (!sameAnchor || !nextCandidate) {
+      setReferenceCombinationNumber(nextCombinationNumber);
+      setCompleteLook(createCompleteLook(item, nextCombinationNumber));
+      setExpandedRoles({});
+      setCombinationChangeNotice(null);
+      return;
+    }
+
+    const transition = switchReferenceCombination(completeLook, nextCandidate);
+    const combinationChanged = referenceCombinationNumber !== nextCombinationNumber;
+    setReferenceCombinationNumber(nextCombinationNumber);
+    setCompleteLook(transition.completeLook);
+    if (combinationChanged || transition.removedSelections.length) {
+      setCombinationChangeNotice({
+        action: combinationChanged ? "Switched to" : "Updated",
+        combinationNumber: nextCombinationNumber,
+        retainedCount: transition.retainedSelections.length,
+        removedSelections: transition.removedSelections,
+      });
+    }
+  }, [candidateRevision, item.id, item.part, referenceCombinationNumber]);
 
   const choosePairingOption = (option) => {
     setCompleteLook((current) => selectPairingOption(current, option));
@@ -299,6 +332,7 @@ function LookBuilderPanel({ item, items }) {
     setReferenceCombinationNumber(candidate.combinationNumber);
     setCompleteLook(transition.completeLook);
     setCombinationChangeNotice({
+      action: "Switched to",
       combinationNumber: candidate.combinationNumber,
       retainedCount: transition.retainedSelections.length,
       removedSelections: transition.removedSelections,
@@ -374,7 +408,7 @@ function LookBuilderPanel({ item, items }) {
 
           {combinationChangeNotice && (
             <div className="combination-change-notice" role="status" aria-live="polite">
-              <strong>Switched to Combination {combinationChangeNotice.combinationNumber}.</strong>
+              <strong>{combinationChangeNotice.action} Combination {combinationChangeNotice.combinationNumber}.</strong>
               {combinationChangeNotice.removedSelections.length ? (
                 <>
                   <ul>

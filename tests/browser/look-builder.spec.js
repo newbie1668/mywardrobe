@@ -29,8 +29,8 @@ const wardrobe = [
   garment("accessory-two", "Calamine accessory two", "accessories_up", "#78cdd0"),
 ];
 
-async function openFixtureLookBuilder(page) {
-  await page.route("**/api/import/wardrobe", (route) => route.fulfill({ json: wardrobe }));
+async function openFixtureLookBuilder(page, fixtureWardrobe = wardrobe) {
+  await page.route("**/api/import/wardrobe", (route) => route.fulfill({ json: fixtureWardrobe }));
   await page.route("**/api/import/outfits", (route) => route.fulfill({ json: [] }));
   await page.goto("/");
   await page.getByTestId("wardrobe-item-anchor").click();
@@ -51,7 +51,7 @@ test("retains, removes, swaps, expands, and keeps one active Reference Combinati
   await openFixtureLookBuilder(page);
 
   await expect(page.getByRole("tab", { name: /Combination 176/ })).toHaveAttribute("aria-selected", "true");
-  await expect(page.getByText("Incomplete Combination", { exact: true })).toBeVisible();
+  await expect(page.getByText("Build your Complete Look", { exact: true })).toBeVisible();
 
   const bottomRole = pairingRole(page, "Bottom");
   const footwearRole = pairingRole(page, "Footwear");
@@ -89,7 +89,7 @@ test("retains, removes, swaps, expands, and keeps one active Reference Combinati
   await expect(notice).toContainText("No replacements were selected.");
   await expect(pairingRole(page, "Footwear").getByRole("button", { name: /Black loafers/ })).toHaveAttribute("aria-pressed", "true");
   await expect(pairingRole(page, "Bottom").getByRole("button", { name: /Light glaucous trousers/ })).toHaveAttribute("aria-pressed", "false");
-  await expect(page.getByText("Incomplete Combination", { exact: true })).toBeVisible();
+  await expect(page.getByText("Build your Complete Look", { exact: true })).toBeVisible();
 
   await pairingRole(page, "Bottom").getByRole("button", { name: /Light glaucous trousers/ }).click();
   await expect(page.getByText("Complete Look", { exact: true })).toBeVisible();
@@ -112,4 +112,37 @@ test("combination controls and expanded options remain usable without mobile ove
   const hasOverflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
   expect(hasOverflow).toBe(false);
   await expect(page.getByRole("heading", { name: "Combination 227" })).toBeVisible();
+});
+
+test("an Incomplete Combination names the Wardrobe Role the wardrobe cannot supply", async ({ page }) => {
+  await openFixtureLookBuilder(page, [
+    wardrobe[0],
+    garment("only-bottom", "Only Seashell bottom", "lowerbody", "#fdd4bd"),
+  ]);
+
+  await expect(page.getByText("Incomplete Combination", { exact: true })).toBeVisible();
+  await expect(page.getByRole("status").filter({ hasText: "Incomplete Combination" })).toContainText(
+    "No Pairing Options are available for Footwear in Combination 176.",
+  );
+});
+
+test("an anchor edit cannot leave the active Combination and Complete Look out of sync", async ({ page }) => {
+  const multicolourWardrobe = [
+    garment("anchor", "Hermosa pink shirt", "upperbody", "#f9c1ce", "#fdd4bd"),
+    ...wardrobe.slice(1),
+  ];
+  await openFixtureLookBuilder(page, multicolourWardrobe);
+
+  await page.getByRole("tab", { name: /Combination 227/ }).click();
+  await pairingRole(page, "Bottom").getByRole("button", { name: /Light glaucous trousers/ }).click();
+  await pairingRole(page, "Footwear").getByRole("button", { name: /Black loafers/ }).click();
+  await expect(page.getByText("Complete Look", { exact: true })).toBeVisible();
+
+  await page.getByLabel("Choose secondary color").fill("#00dddd");
+
+  await expect(page.getByRole("tab", { name: /Combination 176/ })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tab", { name: /Combination 227/ })).toHaveCount(0);
+  await expect(page.getByRole("status").filter({ hasText: "Switched to Combination 176" })).toBeVisible();
+  const selectedOptionCopy = await page.locator(".pairing-option.selected").allTextContents();
+  expect(selectedOptionCopy.every((copy) => !copy.includes("Combination 227"))).toBe(true);
 });

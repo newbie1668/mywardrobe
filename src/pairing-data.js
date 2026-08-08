@@ -210,10 +210,10 @@ function canPairByContext(anchorPiece, candidate) {
   return true;
 }
 
-function secondaryValidatesCombination(secondaryColour, combination) {
-  if (!secondaryColour) return true;
+function secondaryCombinationDistance(secondaryColour, combination) {
+  if (!secondaryColour) return Number.POSITIVE_INFINITY;
   const mapping = closestMapping([secondaryColour], combination.colours);
-  return Boolean(mapping && mapping.distance <= MAX_SECONDARY_DISTANCE);
+  return mapping && mapping.distance <= MAX_SECONDARY_DISTANCE ? mapping.distance : null;
 }
 
 function supportingNeutral(item) {
@@ -430,8 +430,9 @@ export function getLookBuilder(anchorPiece, wardrobe = []) {
   };
 
   const candidates = (COMBINATIONS_BY_COLOUR.get(anchorMapping.index) || [])
-    .filter((combination) => secondaryValidatesCombination(secondaryColour, combination))
     .map((combination) => {
+      const anchorSecondaryDistance = secondaryCombinationDistance(secondaryColour, combination);
+      if (anchorSecondaryDistance === null) return null;
       const coverage = wardrobeCoverage(anchorPiece, wardrobe, combination, anchorMapping);
       if (!coverage) return null;
       const combinationGuide = buildCombinationGuide(combination, anchorColour);
@@ -440,6 +441,7 @@ export function getLookBuilder(anchorPiece, wardrobe = []) {
         label: combinationGuide.label,
         source: DICTIONARY_SOURCE,
         coverage,
+        anchorSecondaryDistance,
         combinationGuide,
         pairingOptionGroups: buildPairingOptionGroups(anchorPiece, wardrobe, combination, anchorMapping),
       };
@@ -447,11 +449,13 @@ export function getLookBuilder(anchorPiece, wardrobe = []) {
     .filter(Boolean)
     .sort((first, second) => (
       second.coverage.swatchCount - first.coverage.swatchCount
+      || first.anchorSecondaryDistance - second.anchorSecondaryDistance
       || second.coverage.pieceCount - first.coverage.pieceCount
       || first.coverage.averageDistance - second.coverage.averageDistance
       || first.combinationNumber - second.combinationNumber
     ))
-    .slice(0, MAX_CANDIDATE_COMBINATIONS);
+    .slice(0, MAX_CANDIDATE_COMBINATIONS)
+    .map(({ anchorSecondaryDistance: _anchorSecondaryDistance, ...candidate }) => candidate);
 
   return {
     ...emptyLookBuilder(anchorPiece, anchorColour),
@@ -512,7 +516,7 @@ export function switchReferenceCombination(completeLook, referenceCombination) {
   const referenceCombinationNumber = referenceCombination.combinationNumber;
   const validOptionsByRole = new Map(referenceCombination.pairingOptionGroups.map((group) => [
     group.wardrobeRole,
-    new Map((group.allOptions || group.options).map((option) => [option.pieceId, option])),
+    new Map(group.allOptions.map((option) => [option.pieceId, option])),
   ]));
   const selectedByRole = {};
   const retainedSelections = [];
@@ -552,18 +556,32 @@ export function switchReferenceCombination(completeLook, referenceCombination) {
   };
 }
 
-export function getWearableCoreStatus(completeLook) {
-  const selectedByRole = completeLook?.selectedByRole || {};
-  const hasClothing = CLOTHING_PATHS.some((path) => path.every((role) => selectedByRole[role]));
-  const hasFootwear = Boolean(selectedByRole.footwear);
+function missingWearableCoreRoles(presentByRole) {
   const missingRequiredRoles = [];
+  const hasClothing = CLOTHING_PATHS.some((path) => path.every((role) => presentByRole[role]));
 
   if (!hasClothing) {
-    if (selectedByRole.top) missingRequiredRoles.push("Bottom");
-    else if (selectedByRole.bottom) missingRequiredRoles.push("Top");
+    if (presentByRole.top) missingRequiredRoles.push("Bottom");
+    else if (presentByRole.bottom) missingRequiredRoles.push("Top");
     else missingRequiredRoles.push("Top and bottom, or a one-piece garment");
   }
-  if (!hasFootwear) missingRequiredRoles.push("Footwear");
+  if (!presentByRole.footwear) missingRequiredRoles.push("Footwear");
+
+  return missingRequiredRoles;
+}
+
+export function getWearableCoreStatus(completeLook, referenceCombination = null) {
+  const selectedByRole = completeLook?.selectedByRole || {};
+  const missingRequiredRoles = missingWearableCoreRoles(selectedByRole);
+  const availableByRole = referenceCombination ? { [completeLook?.anchorRole]: true } : null;
+
+  for (const group of referenceCombination?.pairingOptionGroups || []) {
+    if (group.allOptions.length) availableByRole[group.wardrobeRole] = true;
+  }
+
+  const unavailableRequiredRoles = availableByRole
+    ? missingWearableCoreRoles(availableByRole)
+    : [];
 
   const isWearableCore = missingRequiredRoles.length === 0;
   const expressesReferenceCombination = Object.values(selectedByRole).some((selection) => (
@@ -572,18 +590,24 @@ export function getWearableCoreStatus(completeLook) {
     && selection.mapping?.kind === "dictionary"
   ));
   const blockers = [];
-  if (missingRequiredRoles.length) blockers.push(`Add ${missingRequiredRoles.join(" and ")}.`);
+  if (unavailableRequiredRoles.length) {
+    blockers.push(`No Pairing Options are available for ${unavailableRequiredRoles.join(" and ")} in Combination ${completeLook?.referenceCombinationNumber}.`);
+  }
+  const selectableMissingRoles = missingRequiredRoles.filter((role) => !unavailableRequiredRoles.includes(role));
+  if (selectableMissingRoles.length) blockers.push(`Add ${selectableMissingRoles.join(" and ")}.`);
   if (!expressesReferenceCombination) {
     blockers.push(`Choose at least one Pairing Option mapped to Combination ${completeLook?.referenceCombinationNumber}.`);
   }
 
   const canSave = isWearableCore && expressesReferenceCombination;
+  const isIncompleteCombination = !canSave && unavailableRequiredRoles.length > 0;
   return {
-    kind: canSave ? "complete-look" : "incomplete-combination",
-    label: canSave ? "Complete Look" : "Incomplete Combination",
+    kind: canSave ? "complete-look" : isIncompleteCombination ? "incomplete-combination" : "builder-progress",
+    label: canSave ? "Complete Look" : isIncompleteCombination ? "Incomplete Combination" : "Build your Complete Look",
     isWearableCore,
     expressesReferenceCombination,
     canSave,
+    unavailableRequiredRoles,
     missingRequiredRoles,
     blockers,
   };

@@ -69,6 +69,19 @@ describe("Look Builder candidate combinations", () => {
     expect(secondaryCannotChoose.candidates).toEqual([]);
   });
 
+  it("uses a compatible secondary Anchor Colour to strengthen Candidate Combination ranking", () => {
+    const anchor = hermosaAnchor("#90c5d0");
+    const result = getLookBuilder(anchor, [
+      anchor,
+      ...combination176Wardrobe(),
+      garment("glaucous-bottom", "Light glaucous trousers", "lowerbody", "#a5c8d1"),
+      garment("cerulian-shoes", "Cerulian shoes", "shoes", "#0093a5"),
+    ]);
+
+    expect(result.candidates.map(({ combinationNumber }) => combinationNumber)).toEqual(expect.arrayContaining([176, 227]));
+    expect(result.candidates[0].combinationNumber).toBe(227);
+  });
+
   it("ranks combinations by wearable wardrobe coverage", () => {
     const anchor = hermosaAnchor();
     const wardrobe = [
@@ -377,19 +390,42 @@ describe("Wearable Core selection", () => {
     ))).toBe(true);
   });
 
-  it("distinguishes an Incomplete Combination from a Complete Look and names the missing role", () => {
+  it("distinguishes selection progress and an unavailable-role Incomplete Combination from a Complete Look", () => {
     let look = createCompleteLook(hermosaAnchor(), 176);
-    expect(getWearableCoreStatus(look)).toMatchObject({
+    const availableCombination = {
+      combinationNumber: 176,
+      pairingOptionGroups: [
+        { wardrobeRole: "bottom", allOptions: [mappedOption("bottom", "bottom")] },
+        { wardrobeRole: "footwear", allOptions: [neutralOption("shoe", "footwear")] },
+      ],
+    };
+    expect(getWearableCoreStatus(look, availableCombination)).toMatchObject({
+      kind: "builder-progress",
+      label: "Build your Complete Look",
+      unavailableRequiredRoles: [],
+      missingRequiredRoles: ["Bottom", "Footwear"],
+    });
+
+    const incompleteCombination = {
+      ...availableCombination,
+      pairingOptionGroups: [
+        availableCombination.pairingOptionGroups[0],
+        { wardrobeRole: "footwear", allOptions: [] },
+      ],
+    };
+    expect(getWearableCoreStatus(look, incompleteCombination)).toMatchObject({
       kind: "incomplete-combination",
       label: "Incomplete Combination",
+      unavailableRequiredRoles: ["Footwear"],
       missingRequiredRoles: ["Bottom", "Footwear"],
     });
 
     look = selectPairingOption(look, mappedOption("bottom", "bottom"));
     look = selectPairingOption(look, neutralOption("shoe", "footwear"));
-    expect(getWearableCoreStatus(look)).toMatchObject({
+    expect(getWearableCoreStatus(look, availableCombination)).toMatchObject({
       kind: "complete-look",
       label: "Complete Look",
+      unavailableRequiredRoles: [],
       missingRequiredRoles: [],
     });
   });
