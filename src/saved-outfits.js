@@ -243,6 +243,10 @@ export function renameSavedOutfit(outfit, name, renamedAt = new Date().toISOStri
   };
 }
 
+export function deleteSavedOutfit(outfits, id) {
+  return (Array.isArray(outfits) ? outfits : []).filter((outfit) => outfit?.id !== id);
+}
+
 export function readSavedOutfits(storage = globalThis.localStorage) {
   try {
     const parsed = JSON.parse(storage?.getItem(SAVED_OUTFITS_STORAGE_KEY) || "[]");

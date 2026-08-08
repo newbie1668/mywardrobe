@@ -12,6 +12,7 @@ import {
 import {
   applyModeledPreviewJob,
   createSavedOutfit,
+  deleteSavedOutfit,
   generateSavedOutfitCopy,
   markSavedOutfitsIncomplete,
   readOutfitCollection,
@@ -277,7 +278,7 @@ function OutfitCard({ outfit, selected, onOpen }) {
   );
 }
 
-function OutfitViewer({ outfit, items, onClose, onRename, onRetryCopy, onRetryPreview }) {
+function OutfitViewer({ outfit, items, onClose, onDelete, onRename, onRetryCopy, onRetryPreview }) {
   const closeButtonRef = useRef(null);
   const [outfitName, setOutfitName] = useState(outfit.name || "Saved outfit");
   const itemNames = useMemo(() => new Map(items.map((item) => [item.id, item.name])), [items]);
@@ -308,6 +309,10 @@ function OutfitViewer({ outfit, items, onClose, onRename, onRetryCopy, onRetryPr
   const saveName = (event) => {
     event.preventDefault();
     onRename?.(outfit.id, outfitName);
+  };
+
+  const deleteOutfit = () => {
+    if (window.confirm(`Delete ${outfit.name}? This cannot be undone.`)) onDelete?.(outfit.id);
   };
 
   return (
@@ -357,6 +362,11 @@ function OutfitViewer({ outfit, items, onClose, onRename, onRetryCopy, onRetryPr
                   <button type="button" onClick={() => onRetryCopy?.(outfit.id)}>Retry Outfit Name and Description</button>
                 )}
               </div>
+            )}
+            {isSaved && (
+              <button className="outfit-delete-button" type="button" onClick={deleteOutfit}>
+                <Trash size={15} weight="regular" aria-hidden="true" /> Delete Saved Outfit
+              </button>
             )}
             <div className="outfit-piece-list">
               <p>Pieces</p>
@@ -1269,6 +1279,20 @@ export function App({
     )));
   };
 
+  const deleteOutfit = async (id) => {
+    const outfit = savedOutfits.find((candidate) => candidate.id === id);
+    if (outfit?.generation?.jobId && modeledPreviewService.remove) {
+      try {
+        await modeledPreviewService.remove(outfit.generation.jobId);
+      } catch (requestError) {
+        setOutfitError(requestError.message || "Could not delete the Modeled Preview.");
+        return;
+      }
+    }
+    persistSavedOutfits((current) => deleteSavedOutfit(current, id));
+    setSelectedOutfitId(null);
+  };
+
   return (
     <div className={`app-shell${selectedItem ? " has-selection" : ""}`}>
       <main className="gallery-pane">
@@ -1365,7 +1389,7 @@ export function App({
       </main>
 
       {selectedItem && <ItemViewer item={selectedItem} items={items} onClose={() => setSelectedId(null)} onSave={saveItem} onDelete={deleteItem} onSaveCompleteLook={saveCompleteLook} />}
-      {selectedOutfit && <OutfitViewer outfit={selectedOutfit} items={items} onClose={() => setSelectedOutfitId(null)} onRename={renameOutfit} onRetryCopy={retryOutfitCopy} onRetryPreview={retryOutfitPreview} />}
+      {selectedOutfit && <OutfitViewer outfit={selectedOutfit} items={items} onClose={() => setSelectedOutfitId(null)} onDelete={deleteOutfit} onRename={renameOutfit} onRetryCopy={retryOutfitCopy} onRetryPreview={retryOutfitPreview} />}
       {showImportFlow && <WardrobeImportFlow onGarmentApproved={addImportedItem} onModeledApproved={attachImportedModeledImage} />}
     </div>
   );

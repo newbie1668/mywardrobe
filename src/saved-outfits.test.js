@@ -3,6 +3,7 @@ import {
   applyModeledPreviewJob,
   completeSavedOutfitCopy,
   createSavedOutfit,
+  deleteSavedOutfit,
   generateSavedOutfitCopy,
   markSavedOutfitsIncomplete,
   renameSavedOutfit,
@@ -84,6 +85,20 @@ const referenceCombination = {
 };
 
 describe("Saved Outfits", () => {
+  it("deletes only the requested Saved Outfit", () => {
+    const first = createSavedOutfit(completeLook, referenceCombination, {
+      id: "saved-delete-first",
+      now: "2026-08-08T15:00:00.000Z",
+    });
+    const second = createSavedOutfit(completeLook, referenceCombination, {
+      id: "saved-delete-second",
+      now: "2026-08-08T15:01:00.000Z",
+    });
+
+    expect(deleteSavedOutfit([first, second], first.id)).toEqual([second]);
+    expect(deleteSavedOutfit([second], "saved-does-not-exist")).toEqual([second]);
+  });
+
   it("creates grounded copy inputs from the immutable Saved Outfit snapshot", () => {
     const saved = createSavedOutfit(completeLook, referenceCombination, {
       id: "saved-copy",

@@ -408,6 +408,8 @@ export function wardrobeImportApi(options = {}) {
   let outfitImageDir;
   let modeledPreviewDir;
   const running = new Map();
+  const cancelledModeledPreviewJobs = new Set();
+  const modeledPreviewMutations = new Map();
   const setting = (name, fallback = "") => options.env?.[name] || process.env[name] || fallback;
   const apiBaseUrl = () => setting("OPENAI_API_BASE_URL", "https://api.openai.com/v1").replace(/\/$/, "");
 
@@ -454,6 +456,17 @@ export function wardrobeImportApi(options = {}) {
   async function saveModeledPreviewJob(job) {
     job.updatedAt = new Date().toISOString();
     await atomicJson(path.join(modeledPreviewDir, `${job.id}.json`), job);
+  }
+
+  async function mutateModeledPreview(id, mutation) {
+    const previous = modeledPreviewMutations.get(id) || Promise.resolve();
+    const next = previous.catch(() => {}).then(mutation);
+    modeledPreviewMutations.set(id, next);
+    try {
+      return await next;
+    } finally {
+      if (modeledPreviewMutations.get(id) === next) modeledPreviewMutations.delete(id);
+    }
   }
 
   function publicModeledPreviewJob(job) {
@@ -509,13 +522,18 @@ export function wardrobeImportApi(options = {}) {
     const lock = `modeled-preview:${job.id}`;
     if (running.has(lock)) return running.get(lock);
     const task = (async () => {
-      const current = await loadModeledPreviewJob(job.id);
-      if (!current || !["generating", "reviewing"].includes(current.status)) return;
-      current.status = "generating";
-      current.error = null;
-      current.review = null;
-      current.attempts = (current.attempts || 0) + 1;
-      await saveModeledPreviewJob(current);
+      const current = await mutateModeledPreview(job.id, async () => {
+        if (cancelledModeledPreviewJobs.has(job.id)) return null;
+        const next = await loadModeledPreviewJob(job.id);
+        if (!next || !["generating", "reviewing"].includes(next.status)) return null;
+        next.status = "generating";
+        next.error = null;
+        next.review = null;
+        next.attempts = (next.attempts || 0) + 1;
+        await saveModeledPreviewJob(next);
+        return next;
+      });
+      if (!current) return;
       try {
         const setup = await setupStatus();
         if (!setup.ready) throw new Error("Modeled Preview setup is incomplete. Add the API key and identity reference, then retry.");
@@ -533,11 +551,17 @@ export function wardrobeImportApi(options = {}) {
           prompt: modeledPreviewPrompt(garments),
         });
         const imageFile = `${current.id}-${current.attempts}.png`;
-        await writeFile(path.join(outfitImageDir, imageFile), bytes);
-        const reviewing = await loadModeledPreviewJob(current.id);
-        reviewing.status = "reviewing";
-        reviewing.imageFile = imageFile;
-        await saveModeledPreviewJob(reviewing);
+        const persistedForReview = await mutateModeledPreview(current.id, async () => {
+          if (cancelledModeledPreviewJobs.has(current.id)) return false;
+          const reviewing = await loadModeledPreviewJob(current.id);
+          if (!reviewing) return false;
+          await writeFile(path.join(outfitImageDir, imageFile), bytes);
+          reviewing.status = "reviewing";
+          reviewing.imageFile = imageFile;
+          await saveModeledPreviewJob(reviewing);
+          return true;
+        });
+        if (!persistedForReview) return;
         const firstReview = await reviewModeledPreview({
           key,
           baseUrl: apiBaseUrl(),
@@ -557,19 +581,29 @@ export function wardrobeImportApi(options = {}) {
             garments,
             priorRejectionReasons: firstReview.reasons,
           }));
-        const completed = await loadModeledPreviewJob(current.id);
-        completed.review = review;
-        completed.status = review.accepted ? "ready" : "failed";
-        completed.error = review.accepted ? null : "The fidelity review could not confirm this Modeled Preview.";
-        await saveModeledPreviewJob(completed);
+        await mutateModeledPreview(current.id, async () => {
+          if (cancelledModeledPreviewJobs.has(current.id)) return;
+          const completed = await loadModeledPreviewJob(current.id);
+          if (!completed) return;
+          completed.review = review;
+          completed.status = review.accepted ? "ready" : "failed";
+          completed.error = review.accepted ? null : "The fidelity review could not confirm this Modeled Preview.";
+          await saveModeledPreviewJob(completed);
+        });
       } catch (error) {
-        const failed = await loadModeledPreviewJob(current.id);
-        if (!failed) return;
-        failed.status = "failed";
-        failed.error = error.message || "Modeled Preview could not be generated.";
-        await saveModeledPreviewJob(failed);
+        await mutateModeledPreview(current.id, async () => {
+          if (cancelledModeledPreviewJobs.has(current.id)) return;
+          const failed = await loadModeledPreviewJob(current.id);
+          if (!failed) return;
+          failed.status = "failed";
+          failed.error = error.message || "Modeled Preview could not be generated.";
+          await saveModeledPreviewJob(failed);
+        });
       }
-    })().finally(() => running.delete(lock));
+    })().finally(() => {
+      running.delete(lock);
+      cancelledModeledPreviewJobs.delete(job.id);
+    });
     running.set(lock, task);
     return task;
   }
@@ -749,6 +783,17 @@ export function wardrobeImportApi(options = {}) {
       const modeledPreviewMatch = url.pathname.match(/^\/api\/import\/modeled-previews\/(preview-[a-f0-9-]{36})(?:\/(image))?$/i);
       if (modeledPreviewMatch) {
         const [, id, action] = modeledPreviewMatch;
+        if (!action && req.method === "DELETE") {
+          const lock = `modeled-preview:${id}`;
+          await mutateModeledPreview(id, async () => {
+            cancelledModeledPreviewJobs.add(id);
+            const job = await loadModeledPreviewJob(id);
+            if (job?.imageFile) await rm(path.join(outfitImageDir, path.basename(job.imageFile)), { force: true });
+            await rm(path.join(modeledPreviewDir, `${id}.json`), { force: true });
+          });
+          if (!running.has(lock)) cancelledModeledPreviewJobs.delete(id);
+          return json(res, 200, { deleted: true, id });
+        }
         const job = await loadModeledPreviewJob(id);
         if (!job) return json(res, 404, { error: "Modeled Preview job not found" });
         if (action === "image" && req.method === "GET") {

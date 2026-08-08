@@ -14,5 +14,6 @@ export function createModeledPreviewService() {
   return {
     start: (outfit) => request(API_ROOT, { method: "POST", body: JSON.stringify({ outfit }) }),
     read: (jobId) => request(`${API_ROOT}/${encodeURIComponent(jobId)}`),
+    remove: (jobId) => request(`${API_ROOT}/${encodeURIComponent(jobId)}`, { method: "DELETE" }),
   };
 }

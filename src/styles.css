@@ -471,6 +471,28 @@ button { font: inherit; }
 
 .outfit-description button { margin-top: 12px; }
 
+.outfit-delete-button {
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 22px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.outfit-delete-button:hover,
+.outfit-delete-button:focus-visible {
+  text-decoration: underline;
+  outline: none;
+}
+
 .outfit-piece-list {
   margin-top: 30px;
   border-top: 1px solid var(--line);

@@ -251,6 +251,7 @@ test("saving a Complete Look persists a generating Saved Outfit ahead of Curated
 
 test("reconciles a validated Modeled Preview that a prior browser session persisted as failed", async ({ page }) => {
   await page.addInitScript((image) => {
+    if (localStorage.getItem("open-wardrobe-saved-outfits-v1")) return;
     localStorage.setItem("open-wardrobe-saved-outfits-v1", JSON.stringify([{
       id: "saved-reconciled-preview",
       sourceType: "saved",
@@ -293,6 +294,61 @@ test("reconciles a validated Modeled Preview that a prior browser session persis
   const savedSection = page.getByRole("region", { name: "Saved from your wardrobe" });
   await expect(savedSection).toContainText("Your Modeled Preview is ready.");
   await expect(savedSection.locator(".outfit-card-photo img")).toBeVisible();
+});
+
+test("deletes a Saved Outfit without changing curated looks or the wardrobe", async ({ page }) => {
+  await page.addInitScript((image) => {
+    if (localStorage.getItem("open-wardrobe-saved-outfits-v1")) return;
+    localStorage.setItem("open-wardrobe-saved-outfits-v1", JSON.stringify([{
+      id: "saved-delete",
+      sourceType: "saved",
+      createdAt: "2026-08-08T21:24:11.577Z",
+      garmentIds: ["anchor", "seashell-bottom-0", "neutral-shoes"],
+      selectedGarmentsByRole: {
+        top: { pieceId: "anchor", pieceName: "Hermosa pink shirt" },
+        bottom: { pieceId: "seashell-bottom-0", pieceName: "Seashell bottom 0" },
+        footwear: { pieceId: "neutral-shoes", pieceName: "Black loafers" },
+      },
+      colourMappings: {},
+      referenceCombination: { combinationNumber: 176 },
+      generation: { status: "ready", jobId: "preview-saved-delete", review: { accepted: true }, attempts: 1 },
+      name: "Saved outfit to delete",
+      reason: "Your Modeled Preview is ready.",
+      image,
+      copyGeneration: { status: "ready" },
+    }]));
+    globalThis.__deleteModeledPreviewCalls = [];
+    globalThis.__WARDROBE_TEST_SERVICES__ = {
+      modeledPreviewService: {
+        remove: async (id) => globalThis.__deleteModeledPreviewCalls.push(id),
+      },
+    };
+  }, IMAGE);
+  await page.route("**/api/import/wardrobe", (route) => route.fulfill({ json: wardrobe }));
+  await page.route("**/api/import/outfits", (route) => route.fulfill({ json: [{
+    id: "curated-look",
+    name: "Curated look remains",
+    garmentIds: ["anchor"],
+    image: IMAGE,
+    reason: "A curated look.",
+  }] }));
+  await page.goto("/");
+  await page.getByRole("tab", { name: /Outfits/ }).click();
+
+  const savedSection = page.getByRole("region", { name: "Saved from your wardrobe" });
+  await savedSection.getByRole("button", { name: "View Saved outfit to delete" }).click();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Delete Saved Outfit" }).click();
+
+  await expect.poll(() => page.evaluate(() => globalThis.__deleteModeledPreviewCalls)).toEqual(["preview-saved-delete"]);
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(savedSection).toContainText("Complete Looks you save will appear here.");
+  await expect(page.getByRole("region", { name: "Curated looks" })).toContainText("Curated look remains");
+  await page.getByRole("tab", { name: "Wardrobe" }).click();
+  await expect(page.getByTestId("wardrobe-item-anchor")).toBeVisible();
+  await page.reload();
+  await page.getByRole("tab", { name: /Outfits/ }).click();
+  await expect(page.getByRole("region", { name: "Saved from your wardrobe" })).toContainText("Complete Looks you save will appear here.");
 });
 
 test("a rejected Modeled Preview retries without replacing pieces, and a removed piece marks the Saved Outfit incomplete", async ({ page }) => {
