@@ -449,9 +449,9 @@ export function getLookBuilder(anchorPiece, wardrobe = []) {
     .filter(Boolean)
     .sort((first, second) => (
       second.coverage.swatchCount - first.coverage.swatchCount
-      || first.anchorSecondaryDistance - second.anchorSecondaryDistance
       || second.coverage.pieceCount - first.coverage.pieceCount
       || first.coverage.averageDistance - second.coverage.averageDistance
+      || first.anchorSecondaryDistance - second.anchorSecondaryDistance
       || first.combinationNumber - second.combinationNumber
     ))
     .slice(0, MAX_CANDIDATE_COMBINATIONS)
@@ -509,8 +509,35 @@ export function selectPairingOption(completeLook, option) {
 }
 
 export function switchReferenceCombination(completeLook, referenceCombination) {
-  if (!completeLook || !referenceCombination?.combinationNumber) {
+  if (!completeLook) {
     return { completeLook, retainedSelections: [], removedSelections: [] };
+  }
+
+  if (!referenceCombination) {
+    const selectedByRole = {};
+    const removedSelections = [];
+    for (const [wardrobeRole, selection] of Object.entries(completeLook.selectedByRole || {})) {
+      if (selection.isAnchor) {
+        selectedByRole[wardrobeRole] = { ...selection, referenceCombinationNumber: null };
+      } else {
+        removedSelections.push({
+          pieceId: selection.pieceId,
+          pieceName: selection.pieceName,
+          wardrobeRole,
+          roleLabel: selection.roleLabel || ROLE_LABELS[wardrobeRole] || wardrobeRole,
+          reason: `${selection.pieceName} was removed because no Candidate Combination is available for this Anchor Piece.`,
+        });
+      }
+    }
+    return {
+      completeLook: {
+        ...completeLook,
+        referenceCombinationNumber: null,
+        selectedByRole,
+      },
+      retainedSelections: [],
+      removedSelections,
+    };
   }
 
   const referenceCombinationNumber = referenceCombination.combinationNumber;

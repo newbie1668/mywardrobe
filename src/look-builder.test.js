@@ -73,9 +73,9 @@ describe("Look Builder candidate combinations", () => {
     const anchor = hermosaAnchor("#90c5d0");
     const result = getLookBuilder(anchor, [
       anchor,
-      ...combination176Wardrobe(),
+      garment("calamine-bottom", "Calamine trousers", "lowerbody", "#78cdd0"),
       garment("glaucous-bottom", "Light glaucous trousers", "lowerbody", "#a5c8d1"),
-      garment("cerulian-shoes", "Cerulian shoes", "shoes", "#0093a5"),
+      garment("neutral-shoes", "Black loafers", "shoes", "#111111"),
     ]);
 
     expect(result.candidates.map(({ combinationNumber }) => combinationNumber)).toEqual(expect.arrayContaining([176, 227]));
@@ -471,5 +471,19 @@ describe("Reference Combination switching", () => {
     expect(Object.values(switched.completeLook.selectedByRole).every(({ referenceCombinationNumber }) => (
       referenceCombinationNumber === 227
     ))).toBe(true);
+
+    const cleared = switchReferenceCombination(look, null);
+    expect(cleared.completeLook.referenceCombinationNumber).toBeNull();
+    expect(Object.keys(cleared.completeLook.selectedByRole)).toEqual(["top"]);
+    expect(cleared.removedSelections).toEqual([
+      expect.objectContaining({
+        pieceId: "seashell-bottom",
+        reason: "Seashell trousers was removed because no Candidate Combination is available for this Anchor Piece.",
+      }),
+      expect.objectContaining({
+        pieceId: "neutral-shoes",
+        reason: "Black loafers was removed because no Candidate Combination is available for this Anchor Piece.",
+      }),
+    ]);
   });
 });

@@ -146,3 +146,24 @@ test("an anchor edit cannot leave the active Combination and Complete Look out o
   const selectedOptionCopy = await page.locator(".pairing-option.selected").allTextContents();
   expect(selectedOptionCopy.every((copy) => !copy.includes("Combination 227"))).toBe(true);
 });
+
+test("an anchor edit that removes every Candidate Combination explains each cleared selection", async ({ page }) => {
+  const multicolourWardrobe = [
+    garment("anchor", "Hermosa pink shirt", "upperbody", "#f9c1ce", "#90c5d0"),
+    ...wardrobe.slice(1),
+  ];
+  await openFixtureLookBuilder(page, multicolourWardrobe);
+
+  await page.getByRole("tab", { name: /Combination 176/ }).click();
+  await pairingRole(page, "Bottom").getByRole("button", { name: /Seashell bottom 0/ }).click();
+  await pairingRole(page, "Footwear").getByRole("button", { name: /Black loafers/ }).click();
+  await expect(page.getByText("Complete Look", { exact: true })).toBeVisible();
+
+  await page.getByLabel("Choose secondary color").fill("#d96629");
+
+  await expect(page.getByText(/No Candidate Combinations are both close enough/)).toBeVisible();
+  const notice = page.getByRole("status").filter({ hasText: "No Candidate Combination remains" });
+  await expect(notice).toContainText("Seashell bottom 0 was removed because no Candidate Combination is available for this Anchor Piece.");
+  await expect(notice).toContainText("Black loafers was removed because no Candidate Combination is available for this Anchor Piece.");
+  await expect(page.locator(".pairing-option.selected")).toHaveCount(0);
+});

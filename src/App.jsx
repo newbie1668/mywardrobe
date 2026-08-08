@@ -272,13 +272,6 @@ function OutfitViewer({ outfit, items, onClose }) {
 function LookBuilderPanel({ item, items }) {
   const lookBuilder = useMemo(() => getLookBuilder(item, items), [item, items]);
   const defaultCombinationNumber = lookBuilder.candidates[0]?.combinationNumber || null;
-  const candidateRevision = lookBuilder.candidates.map((candidate) => (
-    `${candidate.combinationNumber}:${candidate.pairingOptionGroups.map((group) => (
-      `${group.wardrobeRole}=${group.allOptions.map((option) => (
-        `${option.pieceId}:${option.pieceName}:${option.mapping.kind}:${option.mapping.garmentHex}:${option.mapping.dictionaryHex || option.mapping.neutralName}`
-      )).join(",")}`
-    )).join(";")}`
-  )).join("|");
   const [referenceCombinationNumber, setReferenceCombinationNumber] = useState(defaultCombinationNumber);
   const [completeLook, setCompleteLook] = useState(() => createCompleteLook(item, defaultCombinationNumber));
   const [expandedRoles, setExpandedRoles] = useState({});
@@ -291,6 +284,23 @@ function LookBuilderPanel({ item, items }) {
     getWearableCoreStatus(completeLook, referenceCombination)
   ), [completeLook, referenceCombination]);
 
+  const applyReferenceTransition = (candidate, action = null) => {
+    const transition = switchReferenceCombination(completeLook, candidate);
+    const nextCombinationNumber = candidate?.combinationNumber || null;
+    setReferenceCombinationNumber(nextCombinationNumber);
+    setCompleteLook(transition.completeLook);
+    if (action || transition.removedSelections.length) {
+      setCombinationChangeNotice({
+        heading: nextCombinationNumber
+          ? `${action || "Updated"} Combination ${nextCombinationNumber}.`
+          : "No Candidate Combination remains.",
+        hasCandidate: Boolean(candidate),
+        retainedCount: transition.retainedSelections.length,
+        removedSelections: transition.removedSelections,
+      });
+    }
+  };
+
   useEffect(() => {
     const initialLook = createCompleteLook(item, defaultCombinationNumber);
     const sameAnchor = completeLook.anchorPieceId === item.id && completeLook.anchorRole === initialLook.anchorRole;
@@ -300,27 +310,24 @@ function LookBuilderPanel({ item, items }) {
     const nextCandidate = activeCandidate || lookBuilder.candidates[0] || null;
     const nextCombinationNumber = nextCandidate?.combinationNumber || null;
 
-    if (!sameAnchor || !nextCandidate) {
-      setReferenceCombinationNumber(nextCombinationNumber);
-      setCompleteLook(createCompleteLook(item, nextCombinationNumber));
+    if (!sameAnchor) {
+      setReferenceCombinationNumber(defaultCombinationNumber);
+      setCompleteLook(initialLook);
       setExpandedRoles({});
       setCombinationChangeNotice(null);
       return;
     }
 
-    const transition = switchReferenceCombination(completeLook, nextCandidate);
-    const combinationChanged = referenceCombinationNumber !== nextCombinationNumber;
-    setReferenceCombinationNumber(nextCombinationNumber);
-    setCompleteLook(transition.completeLook);
-    if (combinationChanged || transition.removedSelections.length) {
-      setCombinationChangeNotice({
-        action: combinationChanged ? "Switched to" : "Updated",
-        combinationNumber: nextCombinationNumber,
-        retainedCount: transition.retainedSelections.length,
-        removedSelections: transition.removedSelections,
-      });
+    if (!nextCandidate) {
+      if (completeLook.referenceCombinationNumber !== null) {
+        applyReferenceTransition(null, "No Candidate Combination remains");
+      }
+      return;
     }
-  }, [candidateRevision, item.id, item.part, referenceCombinationNumber]);
+
+    const combinationChanged = referenceCombinationNumber !== nextCombinationNumber;
+    applyReferenceTransition(nextCandidate, combinationChanged ? "Switched to" : null);
+  }, [item.id, item.part, lookBuilder, referenceCombinationNumber]);
 
   const choosePairingOption = (option) => {
     setCompleteLook((current) => selectPairingOption(current, option));
@@ -328,15 +335,7 @@ function LookBuilderPanel({ item, items }) {
 
   const chooseReferenceCombination = (candidate) => {
     if (candidate.combinationNumber === referenceCombination?.combinationNumber) return;
-    const transition = switchReferenceCombination(completeLook, candidate);
-    setReferenceCombinationNumber(candidate.combinationNumber);
-    setCompleteLook(transition.completeLook);
-    setCombinationChangeNotice({
-      action: "Switched to",
-      combinationNumber: candidate.combinationNumber,
-      retainedCount: transition.retainedSelections.length,
-      removedSelections: transition.removedSelections,
-    });
+    applyReferenceTransition(candidate, "Switched to");
   };
 
   return (
@@ -374,6 +373,28 @@ function LookBuilderPanel({ item, items }) {
         </div>
       </div>
 
+      {combinationChangeNotice && (
+        <div className="combination-change-notice" role="status" aria-live="polite">
+          <strong>{combinationChangeNotice.heading}</strong>
+          {combinationChangeNotice.removedSelections.length ? (
+            <>
+              <ul>
+                {combinationChangeNotice.removedSelections.map((selection) => (
+                  <li key={`${selection.wardrobeRole}-${selection.pieceId}`}>{selection.reason}</li>
+                ))}
+              </ul>
+              <p>No replacements were selected. {combinationChangeNotice.retainedCount
+                ? `${combinationChangeNotice.retainedCount} compatible ${combinationChangeNotice.retainedCount === 1 ? "selection was" : "selections were"} kept.`
+                : combinationChangeNotice.hasCandidate
+                  ? "Choose new Pairing Options below."
+                  : "Adjust the Anchor Colours to find a new Candidate Combination."}</p>
+            </>
+          ) : (
+            <p>{combinationChangeNotice.retainedCount ? `Kept ${combinationChangeNotice.retainedCount} compatible ${combinationChangeNotice.retainedCount === 1 ? "selection" : "selections"}.` : "No garment selections needed to change."}</p>
+          )}
+        </div>
+      )}
+
       {lookBuilder.candidates.length ? (
         <>
           <div className="candidate-combinations">
@@ -405,24 +426,6 @@ function LookBuilderPanel({ item, items }) {
               })}
             </div>
           </div>
-
-          {combinationChangeNotice && (
-            <div className="combination-change-notice" role="status" aria-live="polite">
-              <strong>{combinationChangeNotice.action} Combination {combinationChangeNotice.combinationNumber}.</strong>
-              {combinationChangeNotice.removedSelections.length ? (
-                <>
-                  <ul>
-                    {combinationChangeNotice.removedSelections.map((selection) => (
-                      <li key={`${selection.wardrobeRole}-${selection.pieceId}`}>{selection.reason}</li>
-                    ))}
-                  </ul>
-                  <p>No replacements were selected. {combinationChangeNotice.retainedCount ? `${combinationChangeNotice.retainedCount} compatible ${combinationChangeNotice.retainedCount === 1 ? "selection was" : "selections were"} kept.` : "Choose new Pairing Options below."}</p>
-                </>
-              ) : (
-                <p>{combinationChangeNotice.retainedCount ? `Kept ${combinationChangeNotice.retainedCount} compatible ${combinationChangeNotice.retainedCount === 1 ? "selection" : "selections"}.` : "No garment selections needed to change."}</p>
-              )}
-            </div>
-          )}
 
           <article
             className="combination-guide"
