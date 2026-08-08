@@ -28,6 +28,19 @@ const STORAGE_KEY = "open-wardrobe-edits-v1";
 const DELETED_STORAGE_KEY = "open-wardrobe-deleted-v1";
 const DEFAULT_MODELED_PREVIEW_SERVICE = createModeledPreviewService();
 
+async function loadWardrobeFromApi() {
+  const response = await fetch("/api/import/wardrobe", { cache: "no-store" });
+  if (!response.ok) throw new Error("Could not load the wardrobe.");
+  return response.json();
+}
+
+async function loadCuratedOutfitsFromApi() {
+  const response = await fetch("/api/import/outfits", { cache: "no-store" });
+  if (!response.ok) throw new Error("Could not load outfit ideas.");
+  const payload = await response.json();
+  return Array.isArray(payload) ? payload : payload.outfits || [];
+}
+
 const TYPES = [
   { id: "all", label: "All" },
   { id: "upperbody", label: "Tops", singular: "Top" },
@@ -1042,7 +1055,14 @@ function ItemViewer({ item, items, onClose, onSave, onDelete, onSaveCompleteLook
   );
 }
 
-export function App({ generateOutfitCopy = createGroundedOutfitCopy, modeledPreviewService = DEFAULT_MODELED_PREVIEW_SERVICE }) {
+export function App({
+  generateOutfitCopy = createGroundedOutfitCopy,
+  modeledPreviewService = DEFAULT_MODELED_PREVIEW_SERVICE,
+  loadWardrobe = loadWardrobeFromApi,
+  loadCuratedOutfits = loadCuratedOutfitsFromApi,
+  showImportFlow = true,
+  previewNotice = "",
+}) {
   const [items, setItems] = useState([]);
   const [outfits, setOutfits] = useState([]);
   const [savedOutfits, setSavedOutfits] = useState(() => readSavedOutfits());
@@ -1058,11 +1078,7 @@ export function App({ generateOutfitCopy = createGroundedOutfitCopy, modeledPrev
   const runningPreviewRequests = useRef(new Set());
 
   useEffect(() => {
-    fetch("/api/import/wardrobe", { cache: "no-store" })
-      .then((response) => {
-        if (!response.ok) throw new Error("Could not load the wardrobe.");
-        return response.json();
-      })
+    loadWardrobe()
       .then((loadedItems) => {
         const edits = readEdits();
         const deleted = readDeletedItems();
@@ -1071,18 +1087,14 @@ export function App({ generateOutfitCopy = createGroundedOutfitCopy, modeledPrev
       })
       .catch((requestError) => setError(requestError.message))
       .finally(() => setLoading(false));
-  }, []);
+  }, [loadWardrobe]);
 
   useEffect(() => {
-    fetch("/api/import/outfits", { cache: "no-store" })
-      .then((response) => {
-        if (!response.ok) throw new Error("Could not load outfit ideas.");
-        return response.json();
-      })
-      .then((payload) => setOutfits(readOutfitCollection(Array.isArray(payload) ? payload : payload.outfits || [], null).curated))
+    loadCuratedOutfits()
+      .then((loadedOutfits) => setOutfits(readOutfitCollection(loadedOutfits, null).curated))
       .catch((requestError) => setOutfitError(requestError.message))
       .finally(() => setOutfitLoading(false));
-  }, []);
+  }, [loadCuratedOutfits]);
 
   const selectedItem = items.find((item) => item.id === selectedId) || null;
   const allOutfits = useMemo(() => [...savedOutfits, ...outfits], [outfits, savedOutfits]);
@@ -1285,6 +1297,7 @@ export function App({ generateOutfitCopy = createGroundedOutfitCopy, modeledPrev
               ))}
             </nav>
           )}
+          {previewNotice && <p className="preview-notice" role="status">{previewNotice}</p>}
         </header>
 
         {activeView === "wardrobe" && (
@@ -1338,7 +1351,7 @@ export function App({ generateOutfitCopy = createGroundedOutfitCopy, modeledPrev
 
       {selectedItem && <ItemViewer item={selectedItem} items={items} onClose={() => setSelectedId(null)} onSave={saveItem} onDelete={deleteItem} onSaveCompleteLook={saveCompleteLook} />}
       {selectedOutfit && <OutfitViewer outfit={selectedOutfit} items={items} onClose={() => setSelectedOutfitId(null)} onRename={renameOutfit} onRetryCopy={retryOutfitCopy} onRetryPreview={retryOutfitPreview} />}
-      <WardrobeImportFlow onGarmentApproved={addImportedItem} onModeledApproved={attachImportedModeledImage} />
+      {showImportFlow && <WardrobeImportFlow onGarmentApproved={addImportedItem} onModeledApproved={attachImportedModeledImage} />}
     </div>
   );
 }

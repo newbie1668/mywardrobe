@@ -9,3 +9,4 @@ data/
 playwright-report/
 test-results/
 .playwright-data/
+.vercel/
