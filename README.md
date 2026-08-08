@@ -45,7 +45,7 @@ Think of it as a friendly stylist with a clear brief: *begin with the piece you 
 4. Save the Complete Look. The app creates an outfit name and description, generates a Modeled Preview, and checks that preview for identity, framing, and garment fidelity.
 5. Keep, rename, retry, or delete a Saved Outfit. Deleting an outfit never removes the wardrobe pieces it uses.
 
-![A saved outfit and its modeled preview from the local wardrobe](docs/screenshots/my-outfit-preview.png)
+![A Dictionary-guided Saved Outfit with its generated Modeled Preview, shown above Curated Looks](docs/screenshots/my-outfit-preview.png)
 
 ## What this fork adds
 
