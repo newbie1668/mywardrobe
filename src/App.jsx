@@ -2,7 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Check, Plus, Trash, X } from "@phosphor-icons/react";
 import { WardrobeImportFlow } from "./import-flow.jsx";
 import { OptimizedImage } from "./OptimizedImage.jsx";
-import { getLookBuilder } from "./pairing-data.js";
+import {
+  createCompleteLook,
+  getLookBuilder,
+  getWearableCoreStatus,
+  selectPairingOption,
+} from "./pairing-data.js";
 
 const STORAGE_KEY = "open-wardrobe-edits-v1";
 const DELETED_STORAGE_KEY = "open-wardrobe-deleted-v1";
@@ -267,14 +272,24 @@ function LookBuilderPanel({ item, items }) {
   const lookBuilder = useMemo(() => getLookBuilder(item, items), [item, items]);
   const defaultCombinationNumber = lookBuilder.candidates[0]?.combinationNumber || null;
   const [referenceCombinationNumber, setReferenceCombinationNumber] = useState(defaultCombinationNumber);
+  const [completeLook, setCompleteLook] = useState(() => createCompleteLook(item, defaultCombinationNumber));
   const referenceCombination = lookBuilder.candidates.find(({ combinationNumber }) => (
     combinationNumber === referenceCombinationNumber
   )) || lookBuilder.candidates[0] || null;
   const combinationGuide = referenceCombination?.combinationGuide || null;
+  const wearableCoreStatus = useMemo(() => getWearableCoreStatus(completeLook), [completeLook]);
 
   useEffect(() => {
     setReferenceCombinationNumber(defaultCombinationNumber);
   }, [defaultCombinationNumber, item.id]);
+
+  useEffect(() => {
+    setCompleteLook(createCompleteLook(item, referenceCombination?.combinationNumber || null));
+  }, [item.id, item.part, referenceCombination?.combinationNumber]);
+
+  const choosePairingOption = (option) => {
+    setCompleteLook((current) => selectPairingOption(current, option));
+  };
 
   return (
     <section className="look-builder-panel" aria-labelledby="look-builder-title">
@@ -375,6 +390,101 @@ function LookBuilderPanel({ item, items }) {
 
             <p className="combination-guide-attribution">Source: {combinationGuide.attribution}</p>
           </article>
+
+          <section className="pairing-options" aria-labelledby="pairing-options-title">
+            <div className="pairing-options-heading">
+              <div>
+                <p>Build a Wearable Core</p>
+                <h4 id="pairing-options-title">Pairing Options</h4>
+              </div>
+              <small>Required roles first · one piece per role</small>
+            </div>
+
+            <div className="pairing-role-list">
+              {referenceCombination.pairingOptionGroups.map((group) => (
+                <section className="pairing-role" key={group.wardrobeRole} aria-labelledby={`pairing-role-${group.wardrobeRole}`}>
+                  <header>
+                    <div>
+                      <h5 id={`pairing-role-${group.wardrobeRole}`}>{group.label}</h5>
+                      {group.alternative === "clothing" && (
+                        <small>Choose a top and bottom, or choose a one-piece garment.</small>
+                      )}
+                    </div>
+                    <span className={group.requirement === "optional" ? "optional" : "required"}>
+                      {group.requirement === "alternative" ? "Alternative" : group.requirement === "required" ? "Required" : "Optional"}
+                    </span>
+                  </header>
+
+                  {group.options.length ? (
+                    <div className="pairing-option-list">
+                      {group.options.map((option) => {
+                        const selected = completeLook.selectedByRole[option.wardrobeRole]?.pieceId === option.pieceId;
+                        return (
+                          <button
+                            className={`pairing-option${selected ? " selected" : ""}`}
+                            type="button"
+                            key={option.pieceId}
+                            aria-pressed={selected}
+                            onClick={() => choosePairingOption(option)}
+                          >
+                            <span className="pairing-option-image">
+                              <OptimizedImage
+                                src={option.thumbnail || option.image}
+                                alt=""
+                                sizes="72px"
+                                breakpoints={[80, 120, 160]}
+                              />
+                              {selected && <span className="pairing-option-check"><Check size={13} weight="bold" aria-hidden="true" /></span>}
+                            </span>
+                            <span className="pairing-option-copy">
+                              <strong>{option.pieceName}</strong>
+                              {option.mapping.kind === "dictionary" ? (
+                                <small>
+                                  <span className="pairing-option-swatches" aria-hidden="true">
+                                    <i style={{ backgroundColor: option.mapping.garmentHex }} />
+                                    <i style={{ backgroundColor: option.mapping.dictionaryHex }} />
+                                  </span>
+                                  {option.mapping.garmentHex} is {option.mapping.relationship} {option.mapping.dictionaryColourName} ({option.mapping.dictionaryHex}) in Combination {option.referenceCombinationNumber}.
+                                </small>
+                              ) : (
+                                <small>
+                                  <span className="pairing-option-neutral-swatch" style={{ backgroundColor: option.mapping.garmentHex }} aria-hidden="true" />
+                                  {option.mapping.neutralName} · {option.mapping.label}
+                                </small>
+                              )}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="pairing-role-empty">
+                      {group.requirement === "alternative"
+                        ? "No context-appropriate Pairing Options are available for this clothing path."
+                        : "No context-appropriate Pairing Options are available for this required role."}
+                    </p>
+                  )}
+                </section>
+              ))}
+            </div>
+
+            <div className={`wearable-core-status${wearableCoreStatus.canSave ? " ready" : ""}`} role="status" aria-live="polite">
+              <div>
+                <strong>{wearableCoreStatus.canSave ? "Wearable Core complete" : "Complete your Wearable Core"}</strong>
+                {wearableCoreStatus.canSave ? (
+                  <p>The Anchor Piece and your selected Pairing Option express {referenceCombination.label}.</p>
+                ) : (
+                  <ul>
+                    {wearableCoreStatus.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}
+                  </ul>
+                )}
+              </div>
+              <span className={`look-save-readiness${wearableCoreStatus.canSave ? " ready" : ""}`}>
+                {wearableCoreStatus.canSave && <Check size={15} weight="bold" aria-hidden="true" />}
+                {wearableCoreStatus.canSave ? "Ready to save" : "Save unavailable"}
+              </span>
+            </div>
+          </section>
         </>
       ) : (
         <p className="look-builder-empty">
@@ -738,7 +848,7 @@ function ItemViewer({ item, items, onClose, onSave, onDelete }) {
           <span className="action-spacer" />
           <button className="secondary-button" type="button" onClick={cancelEditing}>Cancel</button>
           <button className="primary-button" type="button" onClick={saveEditing}>
-            <Check size={15} weight="bold" aria-hidden="true" /> Save
+            <Check size={15} weight="bold" aria-hidden="true" /> Save item
           </button>
         </div>
       </div>
