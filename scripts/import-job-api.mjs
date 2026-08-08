@@ -352,7 +352,7 @@ async function openAIAnalyze({ key, baseUrl, model, image, mime }) {
 }
 
 async function reviewModeledPreview({ key, baseUrl, model, preview, modelReference, garments }) {
-  const image = (value) => ({ type: "input_image", image_url: `data:image/png;base64,${value.toString("base64")}` });
+  const image = (value) => ({ type: "input_image", image_url: `data:image/png;base64,${value.toString("base64")}`, detail: "high" });
   const garmentList = garments.map(({ name }, index) => `Image ${index + 3}: ${name}`).join("; ");
   const response = await fetch(`${baseUrl}/responses`, {
     method: "POST",
@@ -362,7 +362,7 @@ async function reviewModeledPreview({ key, baseUrl, model, preview, modelReferen
       input: [{ role: "user", content: [
         {
           type: "input_text",
-          text: `Review a proposed Modeled Preview. The first image after this text is the generated candidate and is 1024 by 1024 square; assess framing only from that first image. The second image is an identity reference, not a garment reference. ${garmentList}. Accept only when the generated candidate is a square, full-body view with recognizable identity and every selected garment visible, matching its supplied colour and construction. Reject identity drift, missing selected garments, changed garment colours or construction, invented visible clothing, unrealistic anatomy, or cropped/incomplete framing. Return concise factual reasons.`,
+          text: `Review a proposed Modeled Preview. The first image after this text is the generated candidate and is exactly 1024 by 1024 square; assess framing only from that first image. Determine whether the entire head, legs, and footwear are visibly inside its canvas. Do not infer cropping merely from a close composition or subject position. The second image is an identity reference, not a garment reference. ${garmentList}. Accept only when the generated candidate is a full-body view with recognizable identity and every selected garment visible, matching its supplied colour and construction. Reject identity drift, missing selected garments, changed garment colours or construction, invented visible clothing, unrealistic anatomy, or genuinely cropped/incomplete framing. Return concise factual reasons.`,
         },
         image(preview),
         image(modelReference),
