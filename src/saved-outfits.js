@@ -1,6 +1,6 @@
 export const SAVED_OUTFITS_STORAGE_KEY = "open-wardrobe-saved-outfits-v1";
 
-const GENERATION_STATES = new Set(["generating", "ready", "failed"]);
+const GENERATION_STATES = new Set(["generating", "reviewing", "ready", "failed"]);
 const COPY_GENERATION_STATES = new Set(["generating", "ready", "failed"]);
 
 function copy(value) {
@@ -42,7 +42,13 @@ function normaliseSavedOutfit(value) {
       .filter(Boolean),
     selectedGarmentsByRole,
     colourMappings: value.colourMappings && typeof value.colourMappings === "object" ? value.colourMappings : {},
-    generation: { ...generation, status },
+    generation: {
+      ...generation,
+      status,
+      jobId: typeof generation.jobId === "string" ? generation.jobId : null,
+      attempts: Number.isInteger(generation.attempts) ? generation.attempts : 0,
+      review: generation.review && typeof generation.review === "object" ? generation.review : null,
+    },
     copyGeneration: {
       ...copyGeneration,
       status: copyStatus,
@@ -52,6 +58,12 @@ function normaliseSavedOutfit(value) {
     name: typeof value.name === "string" && value.name.trim() ? value.name.trim() : "Saved outfit",
     nameSource: hasCustomName ? "user" : value.nameSource === "generated" || description ? "generated" : "pending",
     description,
+    incomplete: value.incomplete && typeof value.incomplete === "object" && Array.isArray(value.incomplete.missingGarmentIds)
+      ? {
+        missingGarmentIds: [...new Set(value.incomplete.missingGarmentIds.filter((id) => typeof id === "string"))],
+        detectedAt: typeof value.incomplete.detectedAt === "string" ? value.incomplete.detectedAt : value.createdAt,
+      }
+      : null,
   };
 }
 
@@ -95,6 +107,9 @@ export function createSavedOutfit(completeLook, referenceCombination, options = 
     generation: {
       status: "generating",
       startedAt: createdAt,
+      jobId: null,
+      attempts: 0,
+      review: null,
       error: null,
     },
     name: "Saved outfit",
@@ -108,6 +123,58 @@ export function createSavedOutfit(completeLook, referenceCombination, options = 
     reason: "Your modeled preview is being generated.",
     image: null,
   };
+}
+
+export function applyModeledPreviewJob(outfit, job) {
+  const requestedStatus = GENERATION_STATES.has(job?.status) ? job.status : "failed";
+  const reviewedReady = requestedStatus === "ready" && job?.review?.accepted === true;
+  const status = requestedStatus === "ready" && !reviewedReady ? "failed" : requestedStatus;
+  const image = status === "ready" && typeof job?.image === "string" ? job.image : outfit.image || null;
+  const reviewReasons = Array.isArray(job?.review?.reasons) ? job.review.reasons.filter((reason) => typeof reason === "string" && reason.trim()) : [];
+  const missingReviewMessage = requestedStatus === "ready" && !reviewedReady
+    ? "The fidelity review did not approve this Modeled Preview."
+    : "Modeled Preview could not be generated.";
+  const failedMessage = [job?.error || missingReviewMessage, ...reviewReasons].join(" ");
+  return {
+    ...outfit,
+    image,
+    generation: {
+      ...outfit.generation,
+      status,
+      jobId: typeof job?.id === "string" ? job.id : outfit.generation?.jobId || null,
+      attempts: Number.isInteger(job?.attempts) ? job.attempts : outfit.generation?.attempts || 0,
+      review: job?.review && typeof job.review === "object" ? copy(job.review) : outfit.generation?.review || null,
+      error: status === "failed" ? failedMessage : null,
+      updatedAt: typeof job?.updatedAt === "string" ? job.updatedAt : new Date().toISOString(),
+      readyAt: status === "ready" ? typeof job?.updatedAt === "string" ? job.updatedAt : new Date().toISOString() : outfit.generation?.readyAt || null,
+    },
+  };
+}
+
+export function retrySavedOutfitPreview(outfit, startedAt = new Date().toISOString()) {
+  return {
+    ...outfit,
+    image: null,
+    generation: {
+      ...outfit.generation,
+      status: "generating",
+      jobId: null,
+      startedAt,
+      error: null,
+      review: null,
+    },
+  };
+}
+
+export function markSavedOutfitsIncomplete(outfits, removedPieceId, detectedAt = new Date().toISOString()) {
+  return (Array.isArray(outfits) ? outfits : []).map((outfit) => {
+    if (!outfit?.garmentIds?.includes(removedPieceId)) return outfit;
+    const missingGarmentIds = [...new Set([...(outfit.incomplete?.missingGarmentIds || []), removedPieceId])];
+    return {
+      ...outfit,
+      incomplete: { missingGarmentIds, detectedAt },
+    };
+  });
 }
 
 function cleanCopy(copy) {

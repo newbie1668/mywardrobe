@@ -10,18 +10,23 @@ import {
   switchReferenceCombination,
 } from "./pairing-data.js";
 import {
+  applyModeledPreviewJob,
   createSavedOutfit,
   generateSavedOutfitCopy,
+  markSavedOutfitsIncomplete,
   readOutfitCollection,
   readSavedOutfits,
   renameSavedOutfit,
   retrySavedOutfitCopy,
+  retrySavedOutfitPreview as restartSavedOutfitPreview,
   writeSavedOutfits,
 } from "./saved-outfits.js";
 import { createGroundedOutfitCopy } from "./outfit-copy.js";
+import { createModeledPreviewService } from "./modeled-preview-service.js";
 
 const STORAGE_KEY = "open-wardrobe-edits-v1";
 const DELETED_STORAGE_KEY = "open-wardrobe-deleted-v1";
+const DEFAULT_MODELED_PREVIEW_SERVICE = createModeledPreviewService();
 
 const TYPES = [
   { id: "all", label: "All" },
@@ -201,13 +206,20 @@ function outfitMetadata(outfit) {
 }
 
 function generationMessage(outfit) {
+  if (outfit.incomplete?.missingGarmentIds?.length) return "This Saved Outfit is incomplete because a selected wardrobe piece was removed.";
   if (outfit.generation?.status === "failed") return outfit.generation.error || "Preview generation needs attention.";
+  if (outfit.generation?.status === "reviewing") return "Your Modeled Preview is being checked for identity and garment fidelity.";
   if (outfit.generation?.status === "generating") return "Your modeled preview is being generated.";
+  if (outfit.generation?.status === "ready") return "Your Modeled Preview is ready.";
   return outfit.reason;
 }
 
 function previewStateLabel(outfit) {
-  return outfit.generation?.status === "failed" ? "Preview failed" : "Generating preview";
+  if (outfit.incomplete?.missingGarmentIds?.length) return "Incomplete outfit";
+  if (outfit.generation?.status === "failed") return "Preview failed";
+  if (outfit.generation?.status === "reviewing") return "Reviewing preview";
+  if (outfit.generation?.status === "ready") return "Preview ready";
+  return "Generating preview";
 }
 
 function outfitDescriptionMessage(outfit) {
@@ -252,7 +264,7 @@ function OutfitCard({ outfit, selected, onOpen }) {
   );
 }
 
-function OutfitViewer({ outfit, items, onClose, onRename, onRetryCopy }) {
+function OutfitViewer({ outfit, items, onClose, onRename, onRetryCopy, onRetryPreview }) {
   const closeButtonRef = useRef(null);
   const [outfitName, setOutfitName] = useState(outfit.name || "Saved outfit");
   const itemNames = useMemo(() => new Map(items.map((item) => [item.id, item.name])), [items]);
@@ -322,6 +334,9 @@ function OutfitViewer({ outfit, items, onClose, onRename, onRetryCopy }) {
               </div>
             )}
             <p className="outfit-viewer-reason">{generationMessage(outfit)}</p>
+            {isSaved && outfit.generation?.status === "failed" && !outfit.incomplete?.missingGarmentIds?.length && (
+              <button className="outfit-preview-retry" type="button" onClick={() => onRetryPreview?.(outfit.id)}>Retry Modeled Preview</button>
+            )}
             {isSaved && (
               <div className="outfit-description" aria-live="polite">
                 <p>{outfitDescriptionMessage(outfit)}</p>
@@ -1027,7 +1042,7 @@ function ItemViewer({ item, items, onClose, onSave, onDelete, onSaveCompleteLook
   );
 }
 
-export function App({ generateOutfitCopy = createGroundedOutfitCopy }) {
+export function App({ generateOutfitCopy = createGroundedOutfitCopy, modeledPreviewService = DEFAULT_MODELED_PREVIEW_SERVICE }) {
   const [items, setItems] = useState([]);
   const [outfits, setOutfits] = useState([]);
   const [savedOutfits, setSavedOutfits] = useState(() => readSavedOutfits());
@@ -1040,6 +1055,7 @@ export function App({ generateOutfitCopy = createGroundedOutfitCopy }) {
   const [error, setError] = useState("");
   const [outfitError, setOutfitError] = useState("");
   const runningCopyGenerations = useRef(new Set());
+  const runningPreviewRequests = useRef(new Set());
 
   useEffect(() => {
     fetch("/api/import/wardrobe", { cache: "no-store" })
@@ -1119,13 +1135,57 @@ export function App({ generateOutfitCopy = createGroundedOutfitCopy }) {
           .then((nextOutfit) => {
             persistSavedOutfits((current) => current.map((candidate) => (
               candidate.id === outfit.id && candidate.copyGeneration?.status === "generating"
-                ? nextOutfit
+                ? {
+                  ...candidate,
+                  name: candidate.nameSource === "user" ? candidate.name : nextOutfit.name,
+                  nameSource: candidate.nameSource === "user" ? "user" : nextOutfit.nameSource,
+                  description: nextOutfit.description,
+                  copyGeneration: nextOutfit.copyGeneration,
+                }
                 : candidate
             )));
           })
           .finally(() => runningCopyGenerations.current.delete(outfit.id));
       });
   }, [generateOutfitCopy, persistSavedOutfits, savedOutfits]);
+
+  useEffect(() => {
+    const timerIds = [];
+    const updatePreview = (outfitId, job) => persistSavedOutfits((current) => current.map((candidate) => (
+      candidate.id === outfitId && !candidate.incomplete?.missingGarmentIds?.length
+        ? applyModeledPreviewJob(candidate, job)
+        : candidate
+    )));
+
+    savedOutfits
+      .filter((outfit) => !outfit.incomplete?.missingGarmentIds?.length && outfit.generation?.status === "generating" && !outfit.generation.jobId)
+      .forEach((outfit) => {
+        const requestId = `start:${outfit.id}`;
+        if (runningPreviewRequests.current.has(requestId)) return;
+        runningPreviewRequests.current.add(requestId);
+        modeledPreviewService.start(outfit)
+          .then((job) => updatePreview(outfit.id, job))
+          .catch((error) => updatePreview(outfit.id, { status: "failed", error: error.message }))
+          .finally(() => runningPreviewRequests.current.delete(requestId));
+      });
+
+    savedOutfits
+      .filter((outfit) => !outfit.incomplete?.missingGarmentIds?.length && ["generating", "reviewing"].includes(outfit.generation?.status) && outfit.generation?.jobId)
+      .forEach((outfit) => {
+        const requestId = `read:${outfit.generation.jobId}`;
+        if (runningPreviewRequests.current.has(requestId)) return;
+        const timer = setTimeout(() => {
+          runningPreviewRequests.current.add(requestId);
+          modeledPreviewService.read(outfit.generation.jobId)
+            .then((job) => updatePreview(outfit.id, job))
+            .catch((error) => updatePreview(outfit.id, { id: outfit.generation.jobId, status: "failed", error: error.message }))
+            .finally(() => runningPreviewRequests.current.delete(requestId));
+        }, 450);
+        timerIds.push(timer);
+      });
+
+    return () => timerIds.forEach(clearTimeout);
+  }, [modeledPreviewService, persistSavedOutfits, savedOutfits]);
 
   const deleteItem = async (id) => {
     if (id.startsWith("import-")) {
@@ -1138,6 +1198,7 @@ export function App({ generateOutfitCopy = createGroundedOutfitCopy }) {
       }
     }
     setItems((current) => current.filter((item) => item.id !== id));
+    persistSavedOutfits((current) => markSavedOutfitsIncomplete(current, id));
     removePersistedEdit(id);
     persistDeletedItem(id);
     setSelectedId(null);
@@ -1172,6 +1233,12 @@ export function App({ generateOutfitCopy = createGroundedOutfitCopy }) {
   const retryOutfitCopy = (id) => {
     persistSavedOutfits((current) => current.map((outfit) => (
       outfit.id === id ? retrySavedOutfitCopy(outfit) : outfit
+    )));
+  };
+
+  const retryOutfitPreview = (id) => {
+    persistSavedOutfits((current) => current.map((outfit) => (
+      outfit.id === id && !outfit.incomplete?.missingGarmentIds?.length ? restartSavedOutfitPreview(outfit) : outfit
     )));
   };
 
@@ -1270,7 +1337,7 @@ export function App({ generateOutfitCopy = createGroundedOutfitCopy }) {
       </main>
 
       {selectedItem && <ItemViewer item={selectedItem} items={items} onClose={() => setSelectedId(null)} onSave={saveItem} onDelete={deleteItem} onSaveCompleteLook={saveCompleteLook} />}
-      {selectedOutfit && <OutfitViewer outfit={selectedOutfit} items={items} onClose={() => setSelectedOutfitId(null)} onRename={renameOutfit} onRetryCopy={retryOutfitCopy} />}
+      {selectedOutfit && <OutfitViewer outfit={selectedOutfit} items={items} onClose={() => setSelectedOutfitId(null)} onRename={renameOutfit} onRetryCopy={retryOutfitCopy} onRetryPreview={retryOutfitPreview} />}
       <WardrobeImportFlow onGarmentApproved={addImportedItem} onModeledApproved={attachImportedModeledImage} />
     </div>
   );

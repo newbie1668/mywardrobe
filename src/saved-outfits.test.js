@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyModeledPreviewJob,
   completeSavedOutfitCopy,
   createSavedOutfit,
   generateSavedOutfitCopy,
+  markSavedOutfitsIncomplete,
   renameSavedOutfit,
   readOutfitCollection,
   readSavedOutfits,
   retrySavedOutfitCopy,
+  retrySavedOutfitPreview,
   writeSavedOutfits,
 } from "./saved-outfits.js";
 import { createGroundedOutfitCopy, groundedOutfitCopyInput } from "./outfit-copy.js";
@@ -186,6 +189,60 @@ describe("Saved Outfits", () => {
         error: null,
       }),
     })]);
+  });
+
+  it("keeps the Saved Outfit stable through modeled-preview review, retry, and a removed garment", () => {
+    const saved = createSavedOutfit(completeLook, referenceCombination, {
+      id: "modeled-preview-lifecycle",
+      now: "2026-08-08T15:00:00.000Z",
+    });
+    const reviewing = applyModeledPreviewJob(saved, {
+      id: "preview-1",
+      status: "reviewing",
+      attempts: 1,
+      updatedAt: "2026-08-08T15:01:00.000Z",
+    });
+    const rejected = applyModeledPreviewJob(reviewing, {
+      id: "preview-1",
+      status: "failed",
+      attempts: 1,
+      error: "The review could not confirm every selected garment.",
+      review: { accepted: false, reasons: ["A selected garment was not visible."] },
+      updatedAt: "2026-08-08T15:02:00.000Z",
+    });
+    const retried = retrySavedOutfitPreview(rejected, "2026-08-08T15:03:00.000Z");
+    const ready = applyModeledPreviewJob(retried, {
+      id: "preview-2",
+      status: "ready",
+      attempts: 2,
+      image: "/api/import/modeled-previews/preview-2/image",
+      review: { accepted: true, reasons: [] },
+      updatedAt: "2026-08-08T15:04:00.000Z",
+    });
+    const [incomplete] = markSavedOutfitsIncomplete([ready], "black-loafers", "2026-08-08T15:05:00.000Z");
+
+    expect(reviewing.generation).toMatchObject({ status: "reviewing", jobId: "preview-1", attempts: 1 });
+    expect(rejected.generation).toMatchObject({ status: "failed", error: "The review could not confirm every selected garment. A selected garment was not visible." });
+    expect(retried.generation).toEqual(expect.objectContaining({ status: "generating", jobId: null, attempts: 1 }));
+    expect(ready).toEqual(expect.objectContaining({
+      image: "/api/import/modeled-previews/preview-2/image",
+      generation: expect.objectContaining({ status: "ready", jobId: "preview-2", attempts: 2 }),
+      selectedGarmentsByRole: saved.selectedGarmentsByRole,
+      referenceCombination: saved.referenceCombination,
+    }));
+    expect(applyModeledPreviewJob(retried, {
+      id: "preview-unreviewed",
+      status: "ready",
+      attempts: 2,
+      image: "/api/import/modeled-previews/preview-unreviewed/image",
+    }).generation).toMatchObject({
+      status: "failed",
+      error: "The fidelity review did not approve this Modeled Preview.",
+    });
+    expect(incomplete).toEqual(expect.objectContaining({
+      incomplete: { missingGarmentIds: ["black-loafers"], detectedAt: "2026-08-08T15:05:00.000Z" },
+      selectedGarmentsByRole: saved.selectedGarmentsByRole,
+    }));
   });
 
   it("returns Saved Outfits and Curated Looks through one gallery contract", () => {

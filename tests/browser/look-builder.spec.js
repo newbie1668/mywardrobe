@@ -30,9 +30,25 @@ const wardrobe = [
 ];
 
 async function openFixtureLookBuilder(page, fixtureWardrobe = wardrobe, fixtureOutfits = []) {
+  await page.addInitScript((image) => {
+    if (globalThis.__WARDROBE_TEST_SERVICES__) return;
+    let reads = 0;
+    globalThis.__WARDROBE_TEST_SERVICES__ = {
+      modeledPreviewService: {
+        start: async () => ({ id: "preview-test", status: "generating", attempts: 1 }),
+        read: async () => {
+          reads += 1;
+          return reads === 1
+            ? { id: "preview-test", status: "reviewing", attempts: 1 }
+            : { id: "preview-test", status: "ready", attempts: 1, image, review: { accepted: true, reasons: [] } };
+        },
+      },
+    };
+  }, IMAGE);
   await page.route("**/api/import/wardrobe", (route) => route.fulfill({ json: fixtureWardrobe }));
   await page.route("**/api/import/outfits", (route) => route.fulfill({ json: fixtureOutfits }));
   await page.goto("/");
+  await expect.poll(() => page.evaluate(() => typeof globalThis.__WARDROBE_TEST_SERVICES__?.modeledPreviewService?.start)).toBe("function");
   await page.getByTestId("wardrobe-item-anchor").click();
   await expect(page.getByRole("heading", { name: "Look Builder" })).toBeVisible();
 }
@@ -214,6 +230,9 @@ test("saving a Complete Look persists a generating Saved Outfit ahead of Curated
   await expect(savedSection).toContainText("Your modeled preview is being generated.");
   await expect(savedSection).toContainText("Hermosa pink shirt · closest to Hermosa Pink");
   await expect(savedSection).toContainText("map closest to Hermosa Pink and Seashell Pink");
+  await expect(savedSection).toContainText("Reviewing preview");
+  await expect(savedSection.locator(".outfit-card-photo img").first()).toBeVisible();
+  await expect(savedSection).toContainText("Your Modeled Preview is ready.");
   await savedSection.getByRole("button").first().click();
   await page.getByLabel("Outfit Name").fill("Pink shirt and loafers");
   await page.getByRole("button", { name: "Save name" }).click();
@@ -228,4 +247,133 @@ test("saving a Complete Look persists a generating Saved Outfit ahead of Curated
   await expect(page.getByRole("region", { name: "Saved from your wardrobe" }).getByLabel("Saved from your wardrobe").getByRole("button").first()).toContainText("Pink shirt and loafers");
   await expect(page.getByRole("region", { name: "Curated looks" }).getByLabel("Curated looks")).toContainText("Existing curated look");
   expect(consoleErrors).toEqual([]);
+});
+
+test("a rejected Modeled Preview retries without replacing pieces, and a removed piece marks the Saved Outfit incomplete", async ({ page }) => {
+  const consoleErrors = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") consoleErrors.push(message.text());
+  });
+  await page.addInitScript((image) => {
+    let attempt = 0;
+    globalThis.__WARDROBE_TEST_SERVICES__ = {
+      modeledPreviewService: {
+        start: async () => {
+          attempt += 1;
+          if (attempt === 2) throw new Error("The image service is temporarily unavailable.");
+          return { id: `preview-retry-${attempt}`, status: "generating", attempts: attempt };
+        },
+        read: async (id) => attempt === 1
+          ? {
+            id,
+            status: "failed",
+            attempts: 1,
+            error: "The fidelity review could not confirm this Modeled Preview.",
+            review: { accepted: false, reasons: ["A selected garment was not visible."] },
+          }
+          : { id, status: "ready", attempts: 2, image, review: { accepted: true, reasons: [] } },
+      },
+    };
+  }, IMAGE);
+  await openFixtureLookBuilder(page);
+
+  await pairingRole(page, "Bottom").getByRole("button", { name: /Seashell bottom 0/ }).click();
+  await pairingRole(page, "Footwear").getByRole("button", { name: /Black loafers/ }).click();
+  await page.getByRole("button", { name: "Save and generate preview" }).click();
+  await page.getByRole("button", { name: "Close viewer" }).click();
+
+  const savedSection = page.getByRole("region", { name: "Saved from your wardrobe" }).getByLabel("Saved from your wardrobe");
+  await expect(savedSection).toContainText("Preview failed");
+  await savedSection.getByRole("button").first().click();
+  await expect(page.getByRole("dialog")).toContainText("A selected garment was not visible.");
+  await page.getByRole("button", { name: "Retry Modeled Preview" }).click();
+  await expect(page.getByRole("dialog")).toContainText("The image service is temporarily unavailable.");
+  await page.getByRole("button", { name: "Retry Modeled Preview" }).click();
+  await expect(page.getByRole("dialog").locator(".outfit-viewer-photo img")).toBeVisible();
+  await expect(page.getByRole("dialog")).toContainText("Black loafers");
+  await page.getByRole("button", { name: "Close outfit viewer" }).click();
+
+  await page.getByRole("tab", { name: "Wardrobe" }).click();
+  await page.getByTestId("wardrobe-item-neutral-shoes").click();
+  await page.getByRole("button", { name: "Delete" }).click();
+  await page.getByRole("tab", { name: /Outfits/ }).click();
+  await expect(savedSection).toContainText("incomplete because a selected wardrobe piece was removed");
+  await savedSection.getByRole("button").first().click();
+  await expect(page.getByRole("dialog")).toContainText("Black loafers");
+  await expect(page.getByRole("dialog")).toContainText("incomplete because a selected wardrobe piece was removed");
+  expect(consoleErrors).toEqual([]);
+});
+
+test("a failed Outfit Name and Description retry keeps the Saved Outfit and its Modeled Preview", async ({ page }) => {
+  await page.addInitScript((image) => {
+    let textAttempt = 0;
+    globalThis.__WARDROBE_TEST_SERVICES__ = {
+      generateOutfitCopy: async () => {
+        textAttempt += 1;
+        if (textAttempt === 1) throw new Error("Text generation is temporarily unavailable.");
+        return {
+          name: "Hermosa pink shirt · closest to Hermosa Pink",
+          description: "Hermosa pink shirt and Seashell bottom 0 map closest to Hermosa Pink and Seashell Pink in Dictionary Vol. 1 · Combination 176.",
+        };
+      },
+      modeledPreviewService: {
+        start: async () => ({ id: "preview-text-retry", status: "generating", attempts: 1 }),
+        read: async () => ({ id: "preview-text-retry", status: "ready", attempts: 1, image, review: { accepted: true, reasons: [] } }),
+      },
+    };
+  }, IMAGE);
+  await openFixtureLookBuilder(page);
+
+  await pairingRole(page, "Bottom").getByRole("button", { name: /Seashell bottom 0/ }).click();
+  await pairingRole(page, "Footwear").getByRole("button", { name: /Black loafers/ }).click();
+  await page.getByRole("button", { name: "Save and generate preview" }).click();
+  await page.getByRole("button", { name: "Close viewer" }).click();
+
+  const savedSection = page.getByRole("region", { name: "Saved from your wardrobe" }).getByLabel("Saved from your wardrobe");
+  await expect(savedSection).toContainText("Text generation is temporarily unavailable.");
+  await savedSection.getByRole("button").first().click();
+  await page.getByRole("button", { name: "Retry Outfit Name and Description" }).click();
+  await expect(page.getByRole("dialog")).toContainText("map closest to Hermosa Pink and Seashell Pink");
+  await expect(page.getByRole("dialog").locator(".outfit-viewer-photo img")).toBeVisible();
+});
+
+test("a persisted Modeled Preview job is recovered after an application restart", async ({ page }) => {
+  await page.addInitScript((image) => {
+    localStorage.setItem("open-wardrobe-saved-outfits-v1", JSON.stringify([{
+      id: "saved-restart",
+      sourceType: "saved",
+      createdAt: "2026-08-08T12:00:00.000Z",
+      garmentIds: ["anchor", "seashell-bottom-0", "neutral-shoes"],
+      selectedGarmentsByRole: {
+        top: { pieceId: "anchor", pieceName: "Hermosa pink shirt", roleLabel: "Top", wardrobeRole: "top", isAnchor: true },
+        bottom: { pieceId: "seashell-bottom-0", pieceName: "Seashell bottom 0", roleLabel: "Bottom", wardrobeRole: "bottom" },
+        footwear: { pieceId: "neutral-shoes", pieceName: "Black loafers", roleLabel: "Footwear", wardrobeRole: "footwear" },
+      },
+      colourMappings: {},
+      referenceCombination: { combinationNumber: 176, source: "A Dictionary of Color Combinations Vol. 1", guide: { swatches: [] } },
+      generation: { status: "reviewing", jobId: "preview-restart", attempts: 1 },
+      copyGeneration: { status: "ready" },
+      name: "Restarted Saved Outfit",
+      nameSource: "user",
+      description: "A saved outfit awaiting its persisted Modeled Preview.",
+    }]));
+    globalThis.__WARDROBE_TEST_SERVICES__ = {
+      modeledPreviewService: {
+        start: async () => { throw new Error("A persisted job must be read, not restarted."); },
+        read: async (id) => ({ id, status: "ready", attempts: 1, image, review: { accepted: true, reasons: [] } }),
+      },
+    };
+  }, IMAGE);
+  await openFixtureLookBuilder(page);
+  const closeViewer = page.getByRole("button", { name: "Close viewer" });
+  if (await closeViewer.isVisible().catch(() => false)) await closeViewer.click();
+
+  await page.getByRole("tab", { name: /Outfits/ }).click();
+  const savedSection = page.getByRole("region", { name: "Saved from your wardrobe" }).getByLabel("Saved from your wardrobe");
+  await expect(savedSection).toContainText("Restarted Saved Outfit");
+  await expect(savedSection.locator(".outfit-card-photo img")).toBeVisible();
+  await page.reload();
+  if (await closeViewer.isVisible().catch(() => false)) await closeViewer.click();
+  await page.getByRole("tab", { name: /Outfits/ }).click();
+  await expect(savedSection.locator(".outfit-card-photo img")).toBeVisible();
 });

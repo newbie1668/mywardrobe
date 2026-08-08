@@ -5,7 +5,7 @@ import "./styles.css";
 
 createRoot(document.getElementById("root")).render(
   <React.StrictMode>
-    <App />
+    <App {...(globalThis.__WARDROBE_TEST_SERVICES__ || {})} />
   </React.StrictMode>,
 );
 

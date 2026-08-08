@@ -435,6 +435,18 @@ button { font: inherit; }
   line-height: 1.55;
 }
 
+.outfit-preview-retry {
+  margin-top: 14px;
+  border: 1px solid var(--ink);
+  padding: 9px 11px;
+  background: var(--ink);
+  color: var(--paper);
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 520;
+}
+
 .outfit-description {
   margin-top: 15px;
   border-left: 2px solid var(--line);
