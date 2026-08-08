@@ -377,3 +377,15 @@ test("a persisted Modeled Preview job is recovered after an application restart"
   await page.getByRole("tab", { name: /Outfits/ }).click();
   await expect(savedSection.locator(".outfit-card-photo img")).toBeVisible();
 });
+
+test("garment editing and the local importer setup remain available alongside the Look Builder", async ({ page }) => {
+  await openFixtureLookBuilder(page);
+
+  await page.getByLabel("Name").fill("Edited Hermosa pink shirt");
+  await page.getByRole("button", { name: "Save item" }).click();
+  await expect(page.getByLabel("Name")).toHaveValue("Edited Hermosa pink shirt");
+  await page.getByRole("button", { name: "Close viewer" }).click();
+  await expect(page.getByTestId("wardrobe-item-anchor")).toHaveAttribute("aria-label", "View Edited Hermosa pink shirt");
+
+  await expect(page.getByRole("button", { name: "Add clothes" })).toBeVisible();
+});
