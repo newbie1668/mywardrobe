@@ -304,6 +304,15 @@ button { font: inherit; }
   line-height: 1.45;
 }
 
+.outfit-card-description {
+  display: block;
+  max-width: 46ch;
+  margin-top: 7px;
+  color: var(--ink);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 .outfit-viewer-entry { width: clamp(430px, 40vw, 620px); }
 
 .outfit-viewer {
@@ -347,6 +356,62 @@ button { font: inherit; }
   letter-spacing: -.025em;
 }
 
+.outfit-name-editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 9px;
+  margin-top: 18px;
+}
+
+.outfit-name-editor label {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 520;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+
+.outfit-name-editor input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 0;
+  padding: 9px 10px;
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+}
+
+.outfit-name-editor input:focus-visible {
+  border-color: var(--ink);
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.outfit-name-editor button,
+.outfit-description button {
+  border: 1px solid var(--ink);
+  padding: 9px 11px;
+  background: var(--ink);
+  color: var(--paper);
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 520;
+}
+
+.outfit-name-editor button:disabled {
+  border-color: var(--line);
+  background: transparent;
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
 .outfit-occasion-list {
   display: flex;
   flex-wrap: wrap;
@@ -369,6 +434,21 @@ button { font: inherit; }
   font-size: 14px;
   line-height: 1.55;
 }
+
+.outfit-description {
+  margin-top: 15px;
+  border-left: 2px solid var(--line);
+  padding-left: 13px;
+}
+
+.outfit-description p {
+  margin: 0;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.outfit-description button { margin-top: 12px; }
 
 .outfit-piece-list {
   margin-top: 30px;
@@ -1778,6 +1858,8 @@ button { font: inherit; }
   .outfit-viewer-entry { width: 100%; height: 100dvh; }
   .outfit-viewer-details { padding: 24px 22px 34px; }
   .outfit-viewer-details h2 { font-size: 21px; }
+  .outfit-name-editor { grid-template-columns: 1fr; }
+  .outfit-name-editor button { width: 100%; }
   .gallery-item { aspect-ratio: .72; }
   .viewer { padding: max(24px, env(safe-area-inset-top)) 22px max(28px, env(safe-area-inset-bottom)); }
   .modeled-hero { flex-basis: 360px; height: 360px; }

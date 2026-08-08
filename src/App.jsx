@@ -11,10 +11,14 @@ import {
 } from "./pairing-data.js";
 import {
   createSavedOutfit,
+  generateSavedOutfitCopy,
   readOutfitCollection,
   readSavedOutfits,
+  renameSavedOutfit,
+  retrySavedOutfitCopy,
   writeSavedOutfits,
 } from "./saved-outfits.js";
+import { createGroundedOutfitCopy } from "./outfit-copy.js";
 
 const STORAGE_KEY = "open-wardrobe-edits-v1";
 const DELETED_STORAGE_KEY = "open-wardrobe-deleted-v1";
@@ -206,6 +210,12 @@ function previewStateLabel(outfit) {
   return outfit.generation?.status === "failed" ? "Preview failed" : "Generating preview";
 }
 
+function outfitDescriptionMessage(outfit) {
+  if (outfit.copyGeneration?.status === "failed") return outfit.copyGeneration.error || "Outfit Name and Description could not be generated.";
+  if (outfit.copyGeneration?.status === "generating") return "Writing your Outfit Name and Description from selected pieces.";
+  return outfit.description || "Your Outfit Name and Description are being prepared.";
+}
+
 function OutfitCard({ outfit, selected, onOpen }) {
   const isGenerating = outfit.generation?.status === "generating";
   const hasPreview = Boolean(outfit.image);
@@ -236,13 +246,15 @@ function OutfitCard({ outfit, selected, onOpen }) {
           <small>{outfitMetadata(outfit)}</small>
         </span>
         <span className="outfit-card-reason">{generationMessage(outfit)}</span>
+        {outfit.sourceType === "saved" && <span className="outfit-card-description">{outfitDescriptionMessage(outfit)}</span>}
       </span>
     </button>
   );
 }
 
-function OutfitViewer({ outfit, items, onClose }) {
+function OutfitViewer({ outfit, items, onClose, onRename, onRetryCopy }) {
   const closeButtonRef = useRef(null);
+  const [outfitName, setOutfitName] = useState(outfit.name || "Saved outfit");
   const itemNames = useMemo(() => new Map(items.map((item) => [item.id, item.name])), [items]);
   const isSaved = outfit.sourceType === "saved";
   const hasPreview = Boolean(outfit.image);
@@ -263,6 +275,15 @@ function OutfitViewer({ outfit, items, onClose }) {
       document.body.classList.remove("viewer-open");
     };
   }, [onClose]);
+
+  useEffect(() => {
+    setOutfitName(outfit.name || "Saved outfit");
+  }, [outfit.id, outfit.name]);
+
+  const saveName = (event) => {
+    event.preventDefault();
+    onRename?.(outfit.id, outfitName);
+  };
 
   return (
     <div className="viewer-overlay outfit-overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
@@ -286,12 +307,29 @@ function OutfitViewer({ outfit, items, onClose }) {
           <div className="outfit-viewer-details">
             <p className="outfit-viewer-eyebrow">{isSaved ? outfitMetadata(outfit) : "Outfit idea"}</p>
             <h2>{outfit.name}</h2>
+            {isSaved && (
+              <form className="outfit-name-editor" onSubmit={saveName}>
+                <label>
+                  <span>Outfit Name</span>
+                  <input value={outfitName} onChange={(event) => setOutfitName(event.target.value)} aria-label="Outfit Name" />
+                </label>
+                <button type="submit" disabled={!outfitName.trim() || outfitName.trim() === outfit.name}>Save name</button>
+              </form>
+            )}
             {!isSaved && Array.isArray(outfit.occasion) && outfit.occasion.length > 0 && (
               <div className="outfit-occasion-list" aria-label="Occasions">
                 {outfit.occasion.map((occasion) => <span key={occasion}>{occasion}</span>)}
               </div>
             )}
             <p className="outfit-viewer-reason">{generationMessage(outfit)}</p>
+            {isSaved && (
+              <div className="outfit-description" aria-live="polite">
+                <p>{outfitDescriptionMessage(outfit)}</p>
+                {outfit.copyGeneration?.status === "failed" && (
+                  <button type="button" onClick={() => onRetryCopy?.(outfit.id)}>Retry Outfit Name and Description</button>
+                )}
+              </div>
+            )}
             <div className="outfit-piece-list">
               <p>Pieces</p>
               <ul>
@@ -989,7 +1027,7 @@ function ItemViewer({ item, items, onClose, onSave, onDelete, onSaveCompleteLook
   );
 }
 
-export function App() {
+export function App({ generateOutfitCopy = createGroundedOutfitCopy }) {
   const [items, setItems] = useState([]);
   const [outfits, setOutfits] = useState([]);
   const [savedOutfits, setSavedOutfits] = useState(() => readSavedOutfits());
@@ -1001,6 +1039,7 @@ export function App() {
   const [outfitLoading, setOutfitLoading] = useState(true);
   const [error, setError] = useState("");
   const [outfitError, setOutfitError] = useState("");
+  const runningCopyGenerations = useRef(new Set());
 
   useEffect(() => {
     fetch("/api/import/wardrobe", { cache: "no-store" })
@@ -1060,6 +1099,34 @@ export function App() {
     persistEdit(updatedItem);
   };
 
+  const persistSavedOutfits = useCallback((updater) => {
+    setSavedOutfits((current) => {
+      const next = typeof updater === "function" ? updater(current) : updater;
+      const sorted = [...next].sort((first, second) => second.createdAt.localeCompare(first.createdAt));
+      writeSavedOutfits(sorted);
+      return sorted;
+    });
+  }, []);
+
+  useEffect(() => {
+    savedOutfits
+      .filter((outfit) => outfit.copyGeneration?.status === "generating")
+      .forEach((outfit) => {
+        if (runningCopyGenerations.current.has(outfit.id)) return;
+        runningCopyGenerations.current.add(outfit.id);
+
+        generateSavedOutfitCopy(outfit, generateOutfitCopy)
+          .then((nextOutfit) => {
+            persistSavedOutfits((current) => current.map((candidate) => (
+              candidate.id === outfit.id && candidate.copyGeneration?.status === "generating"
+                ? nextOutfit
+                : candidate
+            )));
+          })
+          .finally(() => runningCopyGenerations.current.delete(outfit.id));
+      });
+  }, [generateOutfitCopy, persistSavedOutfits, savedOutfits]);
+
   const deleteItem = async (id) => {
     if (id.startsWith("import-")) {
       try {
@@ -1088,14 +1155,24 @@ export function App() {
   const saveCompleteLook = (completeLook, referenceCombination) => {
     try {
       const savedOutfit = createSavedOutfit(completeLook, referenceCombination);
-      const nextSavedOutfits = [savedOutfit, ...savedOutfits].sort((first, second) => second.createdAt.localeCompare(first.createdAt));
-      writeSavedOutfits(nextSavedOutfits);
-      setSavedOutfits(nextSavedOutfits);
+      persistSavedOutfits((current) => [savedOutfit, ...current]);
       setOutfitError("");
       setActiveView("outfits");
     } catch {
       setOutfitError("Could not save this Complete Look. Please try again.");
     }
+  };
+
+  const renameOutfit = (id, name) => {
+    persistSavedOutfits((current) => current.map((outfit) => (
+      outfit.id === id ? renameSavedOutfit(outfit, name) : outfit
+    )));
+  };
+
+  const retryOutfitCopy = (id) => {
+    persistSavedOutfits((current) => current.map((outfit) => (
+      outfit.id === id ? retrySavedOutfitCopy(outfit) : outfit
+    )));
   };
 
   return (
@@ -1193,7 +1270,7 @@ export function App() {
       </main>
 
       {selectedItem && <ItemViewer item={selectedItem} items={items} onClose={() => setSelectedId(null)} onSave={saveItem} onDelete={deleteItem} onSaveCompleteLook={saveCompleteLook} />}
-      {selectedOutfit && <OutfitViewer outfit={selectedOutfit} items={items} onClose={() => setSelectedOutfitId(null)} />}
+      {selectedOutfit && <OutfitViewer outfit={selectedOutfit} items={items} onClose={() => setSelectedOutfitId(null)} onRename={renameOutfit} onRetryCopy={retryOutfitCopy} />}
       <WardrobeImportFlow onGarmentApproved={addImportedItem} onModeledApproved={attachImportedModeledImage} />
     </div>
   );

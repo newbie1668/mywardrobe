@@ -207,18 +207,25 @@ test("saving a Complete Look persists a generating Saved Outfit ahead of Curated
   await page.getByRole("button", { name: "Close viewer" }).click();
 
   const savedSection = page.getByRole("region", { name: "Saved from your wardrobe" }).getByLabel("Saved from your wardrobe");
-  await expect(savedSection.getByRole("button").first()).toContainText("Saved outfit");
+  await expect(savedSection.getByRole("button").first()).toContainText("Hermosa pink shirt · closest to Hermosa Pink");
   await expect(savedSection.getByRole("button").nth(1)).toContainText("Earlier saved outfit");
   await expect(savedSection.getByRole("button").nth(1)).toContainText("Preview failed");
   await expect(savedSection).toContainText("Dictionary Vol. 1 · Combination 176");
   await expect(savedSection).toContainText("Your modeled preview is being generated.");
+  await expect(savedSection).toContainText("Hermosa pink shirt · closest to Hermosa Pink");
+  await expect(savedSection).toContainText("map closest to Hermosa Pink and Seashell Pink");
+  await savedSection.getByRole("button").first().click();
+  await page.getByLabel("Outfit Name").fill("Pink shirt and loafers");
+  await page.getByRole("button", { name: "Save name" }).click();
+  await expect(page.getByRole("dialog")).toContainText("Pink shirt and loafers");
+  await page.getByRole("button", { name: "Close outfit viewer" }).click();
   await expect(page.getByRole("region", { name: "Curated looks" }).getByLabel("Curated looks")).toContainText("Existing curated look");
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
 
   await page.reload();
   await page.getByRole("tab", { name: /Outfits/ }).click();
-  await expect(page.getByRole("region", { name: "Saved from your wardrobe" }).getByLabel("Saved from your wardrobe").getByRole("button").first()).toContainText("Saved outfit");
+  await expect(page.getByRole("region", { name: "Saved from your wardrobe" }).getByLabel("Saved from your wardrobe").getByRole("button").first()).toContainText("Pink shirt and loafers");
   await expect(page.getByRole("region", { name: "Curated looks" }).getByLabel("Curated looks")).toContainText("Existing curated look");
   expect(consoleErrors).toEqual([]);
 });

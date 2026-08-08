@@ -1,6 +1,7 @@
 export const SAVED_OUTFITS_STORAGE_KEY = "open-wardrobe-saved-outfits-v1";
 
 const GENERATION_STATES = new Set(["generating", "ready", "failed"]);
+const COPY_GENERATION_STATES = new Set(["generating", "ready", "failed"]);
 
 function copy(value) {
   return JSON.parse(JSON.stringify(value));
@@ -28,6 +29,10 @@ function normaliseSavedOutfit(value) {
     : {};
   const generation = value.generation && typeof value.generation === "object" ? value.generation : {};
   const status = GENERATION_STATES.has(generation.status) ? generation.status : "generating";
+  const copyGeneration = value.copyGeneration && typeof value.copyGeneration === "object" ? value.copyGeneration : {};
+  const copyStatus = COPY_GENERATION_STATES.has(copyGeneration.status) ? copyGeneration.status : "generating";
+  const description = typeof value.description === "string" ? value.description : "";
+  const hasCustomName = value.nameSource === "user" || (value.name && value.name !== "Saved outfit" && !value.nameSource);
 
   return {
     ...value,
@@ -38,6 +43,15 @@ function normaliseSavedOutfit(value) {
     selectedGarmentsByRole,
     colourMappings: value.colourMappings && typeof value.colourMappings === "object" ? value.colourMappings : {},
     generation: { ...generation, status },
+    copyGeneration: {
+      ...copyGeneration,
+      status: copyStatus,
+      startedAt: copyGeneration.startedAt || value.createdAt,
+      error: copyStatus === "failed" ? copyGeneration.error || "Outfit details could not be generated." : null,
+    },
+    name: typeof value.name === "string" && value.name.trim() ? value.name.trim() : "Saved outfit",
+    nameSource: hasCustomName ? "user" : value.nameSource === "generated" || description ? "generated" : "pending",
+    description,
   };
 }
 
@@ -84,8 +98,81 @@ export function createSavedOutfit(completeLook, referenceCombination, options = 
       error: null,
     },
     name: "Saved outfit",
+    nameSource: "pending",
+    description: "",
+    copyGeneration: {
+      status: "generating",
+      startedAt: createdAt,
+      error: null,
+    },
     reason: "Your modeled preview is being generated.",
     image: null,
+  };
+}
+
+function cleanCopy(copy) {
+  return {
+    name: typeof copy?.name === "string" ? copy.name.trim() : "",
+    description: typeof copy?.description === "string" ? copy.description.trim() : "",
+  };
+}
+
+export function completeSavedOutfitCopy(outfit, copy, completedAt = new Date().toISOString()) {
+  const nextCopy = cleanCopy(copy);
+  const preserveUserName = outfit?.nameSource === "user";
+  return {
+    ...outfit,
+    name: preserveUserName || !nextCopy.name ? outfit.name : nextCopy.name,
+    nameSource: preserveUserName ? "user" : "generated",
+    description: nextCopy.description || outfit.description || "",
+    copyGeneration: {
+      ...outfit.copyGeneration,
+      status: "ready",
+      completedAt,
+      error: null,
+    },
+  };
+}
+
+export function failSavedOutfitCopy(outfit, error, failedAt = new Date().toISOString()) {
+  return {
+    ...outfit,
+    copyGeneration: {
+      ...outfit.copyGeneration,
+      status: "failed",
+      failedAt,
+      error: error?.message || "Outfit details could not be generated.",
+    },
+  };
+}
+
+export function retrySavedOutfitCopy(outfit, startedAt = new Date().toISOString()) {
+  return {
+    ...outfit,
+    copyGeneration: {
+      status: "generating",
+      startedAt,
+      error: null,
+    },
+  };
+}
+
+export async function generateSavedOutfitCopy(outfit, generator, completedAt = new Date().toISOString()) {
+  try {
+    return completeSavedOutfitCopy(outfit, await generator(outfit), completedAt);
+  } catch (error) {
+    return failSavedOutfitCopy(outfit, error, completedAt);
+  }
+}
+
+export function renameSavedOutfit(outfit, name, renamedAt = new Date().toISOString()) {
+  const trimmedName = typeof name === "string" ? name.trim() : "";
+  if (!trimmedName) return outfit;
+  return {
+    ...outfit,
+    name: trimmedName,
+    nameSource: "user",
+    renamedAt,
   };
 }
 
