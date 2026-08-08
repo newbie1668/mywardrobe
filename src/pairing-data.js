@@ -240,8 +240,32 @@ function supportingNeutral(item) {
   return null;
 }
 
+function dictionaryGarmentMapping(item, combination, anchorMapping) {
+  const [primaryColour, secondaryColour] = garmentColours(item);
+  if (!primaryColour) return null;
+
+  const targetColours = combination.colours.filter(({ index }) => index !== anchorMapping.index);
+  const primaryMapping = closestMapping([primaryColour], targetColours);
+  if (!primaryMapping || primaryMapping.distance > MAX_WARDROBE_DISTANCE) return null;
+
+  let secondaryMapping = null;
+  if (secondaryColour) {
+    secondaryMapping = closestMapping([secondaryColour], combination.colours);
+    if (!secondaryMapping || secondaryMapping.distance > MAX_SECONDARY_DISTANCE) return null;
+  }
+
+  const secondaryStrength = secondaryMapping
+    ? (MAX_SECONDARY_DISTANCE - secondaryMapping.distance) / MAX_SECONDARY_DISTANCE
+    : 0;
+  return {
+    primaryMapping,
+    secondaryMapping,
+    rank: primaryMapping.distance - secondaryStrength,
+  };
+}
+
 function pairingOption(item, wardrobeRole, combination, anchorMapping) {
-  const [primaryColour] = garmentColours(item);
+  const [primaryColour, secondaryColour] = garmentColours(item);
   const neutralName = supportingNeutral(item);
   const base = {
     pieceId: item.id,
@@ -254,6 +278,10 @@ function pairingOption(item, wardrobeRole, combination, anchorMapping) {
   };
 
   if (neutralName) {
+    if (secondaryColour) {
+      const secondaryMapping = closestMapping([secondaryColour], combination.colours);
+      if (!secondaryMapping || secondaryMapping.distance > MAX_SECONDARY_DISTANCE) return null;
+    }
     return {
       ...base,
       rank: Number.POSITIVE_INFINITY,
@@ -266,20 +294,20 @@ function pairingOption(item, wardrobeRole, combination, anchorMapping) {
     };
   }
 
-  const targetColours = combination.colours.filter(({ index }) => index !== anchorMapping.index);
-  const mapping = closestMapping(garmentColours(item), targetColours);
-  if (!mapping || mapping.distance > MAX_WARDROBE_DISTANCE) return null;
+  const garmentMapping = dictionaryGarmentMapping(item, combination, anchorMapping);
+  if (!garmentMapping) return null;
+  const { primaryMapping, rank } = garmentMapping;
 
   return {
     ...base,
-    rank: mapping.distance,
+    rank,
     mapping: {
       kind: "dictionary",
-      garmentHex: mapping.source.hex,
-      dictionaryColourName: mapping.target.name,
-      dictionaryHex: mapping.target.hex,
+      garmentHex: primaryMapping.source.hex,
+      dictionaryColourName: primaryMapping.target.name,
+      dictionaryHex: primaryMapping.target.hex,
       relationship: "closest to",
-      distance: mapping.distance,
+      distance: primaryMapping.distance,
     },
   };
 }
@@ -291,7 +319,7 @@ function buildPairingOptionGroups(anchorPiece, wardrobe, combination, anchorMapp
   return requirements
     .map((requirement) => {
       // Context is deliberately evaluated before any perceptual colour ranking.
-      const options = wardrobe
+      const allOptions = wardrobe
         .filter((candidate) => (
           candidate.id !== anchorPiece.id
           && getWardrobeRole(candidate) === requirement.wardrobeRole
@@ -304,13 +332,15 @@ function buildPairingOptionGroups(anchorPiece, wardrobe, combination, anchorMapp
           || first.pieceName.localeCompare(second.pieceName)
           || String(first.pieceId).localeCompare(String(second.pieceId))
         ))
-        .slice(0, MAX_PAIRING_OPTIONS_PER_ROLE)
         .map(({ rank: _rank, ...option }) => option);
 
       return {
         ...requirement,
         label: ROLE_LABELS[requirement.wardrobeRole],
-        options,
+        options: allOptions.slice(0, MAX_PAIRING_OPTIONS_PER_ROLE),
+        allOptions,
+        totalOptionCount: allOptions.length,
+        hasMore: allOptions.length > MAX_PAIRING_OPTIONS_PER_ROLE,
       };
     })
     .filter(({ requirement, options }) => requirement !== "optional" || options.length > 0)
@@ -333,13 +363,14 @@ function wardrobeCoverage(anchorPiece, wardrobe, combination, anchorMapping) {
       && !supportingNeutral(candidate)
     ))
     .map((candidate) => {
-      const mapping = closestMapping(garmentColours(candidate), targetColours);
-      if (!mapping || mapping.distance > MAX_WARDROBE_DISTANCE) return null;
+      const garmentMapping = dictionaryGarmentMapping(candidate, combination, anchorMapping);
+      if (!garmentMapping) return null;
+      const { primaryMapping, rank } = garmentMapping;
       return {
         pieceId: candidate.id,
-        colourIndex: mapping.target.index,
-        colourName: mapping.target.name,
-        distance: mapping.distance,
+        colourIndex: primaryMapping.target.index,
+        colourName: primaryMapping.target.name,
+        distance: rank,
       };
     })
     .filter(Boolean);
@@ -473,6 +504,54 @@ export function selectPairingOption(completeLook, option) {
   return { ...completeLook, selectedByRole };
 }
 
+export function switchReferenceCombination(completeLook, referenceCombination) {
+  if (!completeLook || !referenceCombination?.combinationNumber) {
+    return { completeLook, retainedSelections: [], removedSelections: [] };
+  }
+
+  const referenceCombinationNumber = referenceCombination.combinationNumber;
+  const validOptionsByRole = new Map(referenceCombination.pairingOptionGroups.map((group) => [
+    group.wardrobeRole,
+    new Map((group.allOptions || group.options).map((option) => [option.pieceId, option])),
+  ]));
+  const selectedByRole = {};
+  const retainedSelections = [];
+  const removedSelections = [];
+
+  for (const [wardrobeRole, selection] of Object.entries(completeLook.selectedByRole || {})) {
+    if (selection.isAnchor) {
+      selectedByRole[wardrobeRole] = { ...selection, referenceCombinationNumber };
+      continue;
+    }
+
+    const retainedOption = validOptionsByRole.get(wardrobeRole)?.get(selection.pieceId);
+    if (retainedOption) {
+      selectedByRole[wardrobeRole] = { ...retainedOption, isAnchor: false };
+      retainedSelections.push(selectedByRole[wardrobeRole]);
+      continue;
+    }
+
+    const roleLabel = selection.roleLabel || ROLE_LABELS[wardrobeRole] || wardrobeRole;
+    removedSelections.push({
+      pieceId: selection.pieceId,
+      pieceName: selection.pieceName,
+      wardrobeRole,
+      roleLabel,
+      reason: `${selection.pieceName} is not a valid ${roleLabel} Pairing Option for Combination ${referenceCombinationNumber}.`,
+    });
+  }
+
+  return {
+    completeLook: {
+      ...completeLook,
+      referenceCombinationNumber,
+      selectedByRole,
+    },
+    retainedSelections,
+    removedSelections,
+  };
+}
+
 export function getWearableCoreStatus(completeLook) {
   const selectedByRole = completeLook?.selectedByRole || {};
   const hasClothing = CLOTHING_PATHS.some((path) => path.every((role) => selectedByRole[role]));
@@ -498,10 +577,13 @@ export function getWearableCoreStatus(completeLook) {
     blockers.push(`Choose at least one Pairing Option mapped to Combination ${completeLook?.referenceCombinationNumber}.`);
   }
 
+  const canSave = isWearableCore && expressesReferenceCombination;
   return {
+    kind: canSave ? "complete-look" : "incomplete-combination",
+    label: canSave ? "Complete Look" : "Incomplete Combination",
     isWearableCore,
     expressesReferenceCombination,
-    canSave: isWearableCore && expressesReferenceCombination,
+    canSave,
     missingRequiredRoles,
     blockers,
   };

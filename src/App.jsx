@@ -7,6 +7,7 @@ import {
   getLookBuilder,
   getWearableCoreStatus,
   selectPairingOption,
+  switchReferenceCombination,
 } from "./pairing-data.js";
 
 const STORAGE_KEY = "open-wardrobe-edits-v1";
@@ -273,6 +274,8 @@ function LookBuilderPanel({ item, items }) {
   const defaultCombinationNumber = lookBuilder.candidates[0]?.combinationNumber || null;
   const [referenceCombinationNumber, setReferenceCombinationNumber] = useState(defaultCombinationNumber);
   const [completeLook, setCompleteLook] = useState(() => createCompleteLook(item, defaultCombinationNumber));
+  const [expandedRoles, setExpandedRoles] = useState({});
+  const [combinationChangeNotice, setCombinationChangeNotice] = useState(null);
   const referenceCombination = lookBuilder.candidates.find(({ combinationNumber }) => (
     combinationNumber === referenceCombinationNumber
   )) || lookBuilder.candidates[0] || null;
@@ -281,14 +284,25 @@ function LookBuilderPanel({ item, items }) {
 
   useEffect(() => {
     setReferenceCombinationNumber(defaultCombinationNumber);
-  }, [defaultCombinationNumber, item.id]);
-
-  useEffect(() => {
-    setCompleteLook(createCompleteLook(item, referenceCombination?.combinationNumber || null));
-  }, [item.id, item.part, referenceCombination?.combinationNumber]);
+    setCompleteLook(createCompleteLook(item, defaultCombinationNumber));
+    setExpandedRoles({});
+    setCombinationChangeNotice(null);
+  }, [defaultCombinationNumber, item.id, item.part]);
 
   const choosePairingOption = (option) => {
     setCompleteLook((current) => selectPairingOption(current, option));
+  };
+
+  const chooseReferenceCombination = (candidate) => {
+    if (candidate.combinationNumber === referenceCombination?.combinationNumber) return;
+    const transition = switchReferenceCombination(completeLook, candidate);
+    setReferenceCombinationNumber(candidate.combinationNumber);
+    setCompleteLook(transition.completeLook);
+    setCombinationChangeNotice({
+      combinationNumber: candidate.combinationNumber,
+      retainedCount: transition.retainedSelections.length,
+      removedSelections: transition.removedSelections,
+    });
   };
 
   return (
@@ -341,7 +355,7 @@ function LookBuilderPanel({ item, items }) {
                     role="tab"
                     aria-selected={isReference}
                     aria-controls={`combination-guide-${candidate.combinationNumber}`}
-                    onClick={() => setReferenceCombinationNumber(candidate.combinationNumber)}
+                    onClick={() => chooseReferenceCombination(candidate)}
                   >
                     <strong>{candidate.label}</strong>
                     <span className="candidate-combination-swatches" aria-hidden="true">
@@ -357,6 +371,24 @@ function LookBuilderPanel({ item, items }) {
               })}
             </div>
           </div>
+
+          {combinationChangeNotice && (
+            <div className="combination-change-notice" role="status" aria-live="polite">
+              <strong>Switched to Combination {combinationChangeNotice.combinationNumber}.</strong>
+              {combinationChangeNotice.removedSelections.length ? (
+                <>
+                  <ul>
+                    {combinationChangeNotice.removedSelections.map((selection) => (
+                      <li key={`${selection.wardrobeRole}-${selection.pieceId}`}>{selection.reason}</li>
+                    ))}
+                  </ul>
+                  <p>No replacements were selected. {combinationChangeNotice.retainedCount ? `${combinationChangeNotice.retainedCount} compatible ${combinationChangeNotice.retainedCount === 1 ? "selection was" : "selections were"} kept.` : "Choose new Pairing Options below."}</p>
+                </>
+              ) : (
+                <p>{combinationChangeNotice.retainedCount ? `Kept ${combinationChangeNotice.retainedCount} compatible ${combinationChangeNotice.retainedCount === 1 ? "selection" : "selections"}.` : "No garment selections needed to change."}</p>
+              )}
+            </div>
+          )}
 
           <article
             className="combination-guide"
@@ -401,7 +433,11 @@ function LookBuilderPanel({ item, items }) {
             </div>
 
             <div className="pairing-role-list">
-              {referenceCombination.pairingOptionGroups.map((group) => (
+              {referenceCombination.pairingOptionGroups.map((group) => {
+                const isExpanded = Boolean(expandedRoles[group.wardrobeRole]);
+                const displayedOptions = isExpanded ? group.allOptions : group.options;
+                const optionListId = `pairing-options-${referenceCombination.combinationNumber}-${group.wardrobeRole}`;
+                return (
                 <section className="pairing-role" key={group.wardrobeRole} aria-labelledby={`pairing-role-${group.wardrobeRole}`}>
                   <header>
                     <div>
@@ -416,8 +452,9 @@ function LookBuilderPanel({ item, items }) {
                   </header>
 
                   {group.options.length ? (
-                    <div className="pairing-option-list">
-                      {group.options.map((option) => {
+                    <>
+                    <div className="pairing-option-list" id={optionListId}>
+                      {displayedOptions.map((option) => {
                         const selected = completeLook.selectedByRole[option.wardrobeRole]?.pieceId === option.pieceId;
                         return (
                           <button
@@ -457,6 +494,21 @@ function LookBuilderPanel({ item, items }) {
                         );
                       })}
                     </div>
+                    {group.hasMore && (
+                      <button
+                        className="pairing-see-all"
+                        type="button"
+                        aria-expanded={isExpanded}
+                        aria-controls={optionListId}
+                        onClick={() => setExpandedRoles((current) => ({
+                          ...current,
+                          [group.wardrobeRole]: !isExpanded,
+                        }))}
+                      >
+                        {isExpanded ? "Show first six" : `See all ${group.totalOptionCount} ${group.label.toLowerCase()} options`}
+                      </button>
+                    )}
+                    </>
                   ) : (
                     <p className="pairing-role-empty">
                       {group.requirement === "alternative"
@@ -465,14 +517,15 @@ function LookBuilderPanel({ item, items }) {
                     </p>
                   )}
                 </section>
-              ))}
+                );
+              })}
             </div>
 
             <div className={`wearable-core-status${wearableCoreStatus.canSave ? " ready" : ""}`} role="status" aria-live="polite">
               <div>
-                <strong>{wearableCoreStatus.canSave ? "Wearable Core complete" : "Complete your Wearable Core"}</strong>
+                <strong>{wearableCoreStatus.label}</strong>
                 {wearableCoreStatus.canSave ? (
-                  <p>The Anchor Piece and your selected Pairing Option express {referenceCombination.label}.</p>
+                  <p>Your Wearable Core is complete and its selected pieces express {referenceCombination.label}.</p>
                 ) : (
                   <ul>
                     {wearableCoreStatus.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}

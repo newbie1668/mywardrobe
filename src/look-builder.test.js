@@ -5,6 +5,7 @@ import {
   getWardrobeRole,
   getWearableCoreStatus,
   selectPairingOption,
+  switchReferenceCombination,
 } from "./pairing-data.js";
 
 const garment = (id, name, part, color, secondaryColor = null, tags = []) => ({
@@ -180,6 +181,9 @@ describe("Pairing Options", () => {
     const bottomGroup = result.candidates[0].pairingOptionGroups.find(({ wardrobeRole }) => wardrobeRole === "bottom");
 
     expect(bottomGroup.options).toHaveLength(6);
+    expect(bottomGroup.allOptions).toHaveLength(8);
+    expect(bottomGroup.hasMore).toBe(true);
+    expect(bottomGroup.totalOptionCount).toBe(8);
     expect(bottomGroup.options[0]).toMatchObject({
       pieceId: "bottom-0",
       pieceName: "Seashell bottom 0",
@@ -192,6 +196,26 @@ describe("Pairing Options", () => {
         dictionaryHex: "#fdd4bd",
         relationship: "closest to",
       },
+    });
+  });
+
+  it("uses a multicolour garment's primary colour for its mapping while its secondary colour strengthens or rejects the option", () => {
+    const anchor = hermosaAnchor();
+    const result = getLookBuilder(anchor, [
+      anchor,
+      garment("solid", "Solid Seashell trousers", "lowerbody", "#fdd4bd"),
+      garment("strengthened", "Patterned Seashell trousers", "lowerbody", "#fdd4bd", "#78cdd0"),
+      garment("secondary-only", "Electric trousers with a pink stripe", "lowerbody", "#0000ff", "#fdd4bd"),
+      garment("secondary-clash", "Seashell trousers with an electric stripe", "lowerbody", "#fdd4bd", "#0000ff"),
+      garment("calamine-shoes", "Calamine shoes", "shoes", "#78cdd0"),
+    ]);
+    const combination176 = result.candidates.find(({ combinationNumber }) => combinationNumber === 176);
+    const bottomOptions = combination176.pairingOptionGroups.find(({ wardrobeRole }) => wardrobeRole === "bottom").allOptions;
+
+    expect(bottomOptions.map(({ pieceId }) => pieceId)).toEqual(["strengthened", "solid"]);
+    expect(bottomOptions[0].mapping).toMatchObject({
+      garmentHex: "#fdd4bd",
+      dictionaryColourName: "Seashell Pink",
     });
   });
 
@@ -325,5 +349,91 @@ describe("Wearable Core selection", () => {
     expect(look.selectedByRole.top).toBeUndefined();
     expect(look.selectedByRole.bottom).toBeUndefined();
     expect(look.selectedByRole["one-piece"].pieceId).toBe("dress");
+  });
+
+  it("keeps at most one optional layer and accessory and swaps each role independently", () => {
+    let look = createCompleteLook(hermosaAnchor(), 176);
+    look = selectPairingOption(look, mappedOption("first-layer", "layer"));
+    look = selectPairingOption(look, mappedOption("second-layer", "layer"));
+    look = selectPairingOption(look, mappedOption("first-accessory", "accessory"));
+    look = selectPairingOption(look, mappedOption("second-accessory", "accessory"));
+
+    expect(look.selectedByRole.layer.pieceId).toBe("second-layer");
+    expect(look.selectedByRole.accessory.pieceId).toBe("second-accessory");
+    expect(Object.values(look.selectedByRole).filter(({ wardrobeRole }) => wardrobeRole === "layer")).toHaveLength(1);
+    expect(Object.values(look.selectedByRole).filter(({ wardrobeRole }) => wardrobeRole === "accessory")).toHaveLength(1);
+  });
+
+  it("rejects Pairing Options from another Reference Combination", () => {
+    const look = createCompleteLook(hermosaAnchor(), 176);
+    const unchanged = selectPairingOption(look, {
+      ...mappedOption("wrong-bottom", "bottom"),
+      referenceCombinationNumber: 227,
+    });
+
+    expect(unchanged).toBe(look);
+    expect(Object.values(unchanged.selectedByRole).every(({ referenceCombinationNumber }) => (
+      referenceCombinationNumber === 176
+    ))).toBe(true);
+  });
+
+  it("distinguishes an Incomplete Combination from a Complete Look and names the missing role", () => {
+    let look = createCompleteLook(hermosaAnchor(), 176);
+    expect(getWearableCoreStatus(look)).toMatchObject({
+      kind: "incomplete-combination",
+      label: "Incomplete Combination",
+      missingRequiredRoles: ["Bottom", "Footwear"],
+    });
+
+    look = selectPairingOption(look, mappedOption("bottom", "bottom"));
+    look = selectPairingOption(look, neutralOption("shoe", "footwear"));
+    expect(getWearableCoreStatus(look)).toMatchObject({
+      kind: "complete-look",
+      label: "Complete Look",
+      missingRequiredRoles: [],
+    });
+  });
+});
+
+describe("Reference Combination switching", () => {
+  it("retains compatible garments, removes incompatible garments with reasons, and never replaces them", () => {
+    const anchor = hermosaAnchor();
+    const wardrobe = [
+      anchor,
+      garment("seashell-bottom", "Seashell trousers", "lowerbody", "#fdd4bd"),
+      garment("glaucous-bottom", "Light glaucous trousers", "lowerbody", "#a5c8d1"),
+      garment("neutral-shoes", "Black loafers", "shoes", "#111111"),
+    ];
+    const builder = getLookBuilder(anchor, wardrobe);
+    const combination176 = builder.candidates.find(({ combinationNumber }) => combinationNumber === 176);
+    const combination227 = builder.candidates.find(({ combinationNumber }) => combinationNumber === 227);
+    const optionFrom = (combination, wardrobeRole, pieceId) => combination.pairingOptionGroups
+      .find((group) => group.wardrobeRole === wardrobeRole)
+      .allOptions.find((option) => option.pieceId === pieceId);
+
+    let look = createCompleteLook(anchor, 176);
+    look = selectPairingOption(look, optionFrom(combination176, "bottom", "seashell-bottom"));
+    look = selectPairingOption(look, optionFrom(combination176, "footwear", "neutral-shoes"));
+
+    const switched = switchReferenceCombination(look, combination227);
+
+    expect(switched.completeLook.referenceCombinationNumber).toBe(227);
+    expect(switched.completeLook.selectedByRole.footwear).toMatchObject({
+      pieceId: "neutral-shoes",
+      referenceCombinationNumber: 227,
+    });
+    expect(switched.completeLook.selectedByRole.bottom).toBeUndefined();
+    expect(switched.completeLook.selectedByRole.bottom?.pieceId).not.toBe("glaucous-bottom");
+    expect(switched.retainedSelections.map(({ pieceId }) => pieceId)).toEqual(["neutral-shoes"]);
+    expect(switched.removedSelections).toEqual([{
+      pieceId: "seashell-bottom",
+      pieceName: "Seashell trousers",
+      wardrobeRole: "bottom",
+      roleLabel: "Bottom",
+      reason: "Seashell trousers is not a valid Bottom Pairing Option for Combination 227.",
+    }]);
+    expect(Object.values(switched.completeLook.selectedByRole).every(({ referenceCombinationNumber }) => (
+      referenceCombinationNumber === 227
+    ))).toBe(true);
   });
 });

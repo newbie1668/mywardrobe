@@ -10,7 +10,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "check": "npm run build",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:browser": "playwright test"
   },
   "dependencies": {
     "@fontsource-variable/instrument-sans": "^5.2.8",
@@ -25,6 +26,7 @@
     "vite": "6.4.3"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "vitest": "^3.2.4"
   }
 }
