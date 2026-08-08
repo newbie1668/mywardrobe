@@ -52,11 +52,11 @@ If you are setting up Wardrobe for a user, ask how they want to import their clo
 - Detects every garment in a photo with the OpenAI Responses API
 - Extracts clean product cutouts with the OpenAI Images API
 - Generates an optional modeled editorial preview
-- Suggests in-wardrobe pairings from Wada Sanzo colour harmonies when you open a piece
+- Opens a Dictionary-guided Look Builder with combinations your wardrobe can express
 - Keeps originals, jobs, generated images, and the JSON database local in `data/`
 - Supports drag, drop, paste, editing, review, regeneration, and approval
 
-The pairing engine uses the MIT-licensed open Vol. 1 colour dataset and a small, clearly labelled Vol. 2-inspired seasonal lens with Japanese traditional colour names. It does not reproduce the paid Vol. 2 collection.
+The Look Builder uses the MIT-licensed open Vol. 1 colour dataset. Candidate Combinations are chosen from a piece's primary colour and ranked by plausible coverage from the actual wardrobe; no Vol. 2 approximation participates in this path.
 
 ## Configuration
 

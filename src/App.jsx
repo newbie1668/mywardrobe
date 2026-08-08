@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Check, Plus, Trash, X } from "@phosphor-icons/react";
 import { WardrobeImportFlow } from "./import-flow.jsx";
 import { OptimizedImage } from "./OptimizedImage.jsx";
-import { getPairingRecommendations, PAIRING_ATTRIBUTION } from "./pairing-data.js";
+import { getLookBuilder } from "./pairing-data.js";
 
 const STORAGE_KEY = "open-wardrobe-edits-v1";
 const DELETED_STORAGE_KEY = "open-wardrobe-deleted-v1";
@@ -263,66 +263,124 @@ function OutfitViewer({ outfit, items, onClose }) {
   );
 }
 
-function PairingPanel({ item, items, onOpenItem }) {
-  const pairing = useMemo(() => getPairingRecommendations(item, items), [item, items]);
-  const anchor = pairing?.anchors?.[0] || null;
-  const reference = pairing?.reference || null;
+function LookBuilderPanel({ item, items }) {
+  const lookBuilder = useMemo(() => getLookBuilder(item, items), [item, items]);
+  const defaultCombinationNumber = lookBuilder.candidates[0]?.combinationNumber || null;
+  const [referenceCombinationNumber, setReferenceCombinationNumber] = useState(defaultCombinationNumber);
+  const referenceCombination = lookBuilder.candidates.find(({ combinationNumber }) => (
+    combinationNumber === referenceCombinationNumber
+  )) || lookBuilder.candidates[0] || null;
+  const combinationGuide = referenceCombination?.combinationGuide || null;
+
+  useEffect(() => {
+    setReferenceCombinationNumber(defaultCombinationNumber);
+  }, [defaultCombinationNumber, item.id]);
 
   return (
-    <section className="pairing-panel" aria-labelledby="pairing-title">
-      <div className="pairing-heading">
+    <section className="look-builder-panel" aria-labelledby="look-builder-title">
+      <div className="look-builder-heading">
         <div>
-          <p className="pairing-eyebrow">Pair it with</p>
-          <h3 id="pairing-title">Japanese colour harmony</h3>
+          <p className="look-builder-eyebrow">Build from this piece</p>
+          <h3 id="look-builder-title">Look Builder</h3>
         </div>
-        <small>{pairing?.suggestions?.length || 0} ideas</small>
+        <small>
+          {lookBuilder.candidates.length} Candidate {lookBuilder.candidates.length === 1 ? "Combination" : "Combinations"}
+        </small>
       </div>
 
-      {anchor && (
-        <div className="pairing-anchor">
-          <span className="pairing-anchor-swatch" style={{ backgroundColor: anchor.hex }} aria-hidden="true" />
-          <div>
-            <strong>{anchor.name}</strong>
-            <small>{anchor.hex} · closest Wada colour</small>
-          </div>
+      <div className="look-builder-anchor">
+        <span className="look-builder-anchor-image">
+          <OptimizedImage
+            src={item.thumbnail || item.image}
+            alt=""
+            sizes="58px"
+            breakpoints={[80, 120, 160]}
+          />
+        </span>
+        <div className="look-builder-anchor-copy">
+          <span>Anchor Piece</span>
+          <strong>{item.name || TYPE_MAP[item.part]?.singular || "Wardrobe item"}</strong>
+          {lookBuilder.anchorColour ? (
+            <small>
+              <span className="look-builder-anchor-swatch" style={{ backgroundColor: lookBuilder.anchorColour.garmentHex }} aria-hidden="true" />
+              Primary Anchor Colour {lookBuilder.anchorColour.garmentHex} is closest to {lookBuilder.anchorColour.dictionaryColourName}
+            </small>
+          ) : (
+            <small>No close Dictionary colour was found for the primary Anchor Colour.</small>
+          )}
         </div>
-      )}
+      </div>
 
-      {reference && (
-        <div className="pairing-reference">
-          <div className="pairing-reference-meta">
-            <span>{reference.source}</span>
-            <small>{reference.name}</small>
+      {lookBuilder.candidates.length ? (
+        <>
+          <div className="candidate-combinations">
+            <p>Candidate Combinations</p>
+            <div className="candidate-combination-list" role="tablist" aria-label="Choose a Dictionary Combination">
+              {lookBuilder.candidates.map((candidate) => {
+                const isReference = candidate.combinationNumber === referenceCombination?.combinationNumber;
+                return (
+                  <button
+                    key={candidate.combinationNumber}
+                    type="button"
+                    className={isReference ? "active" : ""}
+                    role="tab"
+                    aria-selected={isReference}
+                    aria-controls={`combination-guide-${candidate.combinationNumber}`}
+                    onClick={() => setReferenceCombinationNumber(candidate.combinationNumber)}
+                  >
+                    <strong>{candidate.label}</strong>
+                    <span className="candidate-combination-swatches" aria-hidden="true">
+                      {candidate.combinationGuide.swatches.map((swatch) => (
+                        <i key={`${candidate.combinationNumber}-${swatch.hex}`} style={{ backgroundColor: swatch.hex }} />
+                      ))}
+                    </span>
+                    <small>
+                      {candidate.coverage.swatchCount} {candidate.coverage.swatchCount === 1 ? "colour" : "colours"} covered
+                    </small>
+                  </button>
+                );
+              })}
+            </div>
           </div>
-          <div className="pairing-reference-swatches" aria-label={`${reference.name} palette`}>
-            {reference.colors.map((color) => (
-              <span key={`${reference.id}-${color.hex}`} style={{ backgroundColor: color.hex }} title={`${color.name} ${color.hex}`} />
-            ))}
-          </div>
-        </div>
-      )}
 
-      {pairing?.suggestions?.length ? (
-        <div className="pairing-list" aria-label={`What to pair with ${item.name}`}>
-          {pairing.suggestions.map(({ item: candidate, match, matchedColor }) => (
-            <button className="pairing-card" key={candidate.id} type="button" onClick={() => onOpenItem(candidate.id)}>
-              <span className="pairing-card-image">
-                <OptimizedImage src={candidate.thumbnail || candidate.image} alt="" sizes="76px" breakpoints={[80, 120, 160]} />
+          <article
+            className="combination-guide"
+            id={`combination-guide-${combinationGuide.combinationNumber}`}
+            role="tabpanel"
+            aria-live="polite"
+          >
+            <header>
+              <p>Combination Guide</p>
+              <h4>{combinationGuide.label}</h4>
+            </header>
+
+            <p className="combination-guide-mapping">
+              <span className="combination-guide-anchor-swatch" style={{ backgroundColor: combinationGuide.anchorColour.garmentHex }} aria-hidden="true" />
+              <span>
+                The primary Anchor Colour <strong>{combinationGuide.anchorColour.garmentHex}</strong> is {combinationGuide.anchorColour.relationship} <strong>{combinationGuide.anchorColour.dictionaryColourName}</strong> ({combinationGuide.anchorColour.dictionaryHex}).
               </span>
-              <span className="pairing-card-copy">
-                <strong>{candidate.name}</strong>
-                <small>{TYPE_MAP[candidate.part]?.singular || "Wardrobe item"}</small>
-                <span>{matchedColor.name} · {match.source === "Vol. 1" ? `plate ${match.palette.id}` : match.palette.name}</span>
-              </span>
-              <span className="pairing-card-swatch" style={{ backgroundColor: matchedColor.hex }} aria-hidden="true" />
-            </button>
-          ))}
-        </div>
+            </p>
+
+            <ul className="combination-guide-swatches" aria-label={`All colours in ${combinationGuide.label}`}>
+              {combinationGuide.swatches.map((swatch) => (
+                <li key={`${combinationGuide.combinationNumber}-${swatch.hex}`}>
+                  <span style={{ backgroundColor: swatch.hex }} aria-hidden="true" />
+                  <div>
+                    <strong>{swatch.name}</strong>
+                    <small>{swatch.hex}</small>
+                  </div>
+                </li>
+              ))}
+            </ul>
+
+            <p className="combination-guide-attribution">Source: {combinationGuide.attribution}</p>
+          </article>
+        </>
       ) : (
-        <p className="pairing-empty">Add more coloured pieces to get a pairing shortlist.</p>
+        <p className="look-builder-empty">
+          No Candidate Combinations are both close enough to this Anchor Colour and covered by wearable pieces in this wardrobe.
+        </p>
       )}
-
-      <p className="pairing-attribution">{PAIRING_ATTRIBUTION}</p>
     </section>
   );
 }
@@ -384,6 +442,10 @@ function ColorControl({ label, field, value, palette, onChange, sampling, setSam
     );
   }
 
+  const uniquePalette = palette.filter((color, index) => (
+    palette.findIndex((candidate) => candidate.toLowerCase() === color.toLowerCase()) === index
+  ));
+
   return (
     <div className="color-slot">
       <div className="color-slot-heading">
@@ -407,7 +469,7 @@ function ColorControl({ label, field, value, palette, onChange, sampling, setSam
         <small>Click to apply</small>
       </div>
       <div className="palette" aria-label={`${label} suggestions from image`}>
-        {palette.map((color) => (
+        {uniquePalette.map((color) => (
           <button
             type="button"
             key={color}
@@ -487,7 +549,7 @@ function ItemEditor({ draft, setDraft, palette, sampling, setSampling, sampleSta
   );
 }
 
-function ItemViewer({ item, items, onOpenItem, onClose, onSave, onDelete }) {
+function ItemViewer({ item, items, onClose, onSave, onDelete }) {
   const closeButtonRef = useRef(null);
   const imageRef = useRef(null);
   const samplingCanvasRef = useRef(null);
@@ -536,14 +598,6 @@ function ItemViewer({ item, items, onOpenItem, onClose, onSave, onDelete }) {
     if (isDirty) nudgeUnsaved();
     else onClose();
   }, [isDirty, nudgeUnsaved, onClose]);
-
-  const openPairing = (id) => {
-    if (isDirty) {
-      nudgeUnsaved();
-      return;
-    }
-    onOpenItem(id);
-  };
 
   useEffect(() => {
     const onKeyDown = (event) => {
@@ -664,6 +718,8 @@ function ItemViewer({ item, items, onOpenItem, onClose, onSave, onDelete }) {
       )}
 
       <div className="viewer-details editing">
+        <LookBuilderPanel item={{ ...item, ...draft }} items={items} />
+
         <ItemEditor
           draft={draft}
           setDraft={setDraft}
@@ -672,8 +728,6 @@ function ItemViewer({ item, items, onOpenItem, onClose, onSave, onDelete }) {
           setSampling={setSampling}
           sampleStatus={sampleStatus}
         />
-
-        <PairingPanel item={item} items={items} onOpenItem={openPairing} />
 
         {closeBlocked && <p className="unsaved-notice" role="status">Save or cancel changes before closing.</p>}
 
@@ -874,7 +928,7 @@ export function App() {
         )}
       </main>
 
-      {selectedItem && <ItemViewer item={selectedItem} items={items} onOpenItem={setSelectedId} onClose={() => setSelectedId(null)} onSave={saveItem} onDelete={deleteItem} />}
+      {selectedItem && <ItemViewer item={selectedItem} items={items} onClose={() => setSelectedId(null)} onSave={saveItem} onDelete={deleteItem} />}
       {selectedOutfit && <OutfitViewer outfit={selectedOutfit} items={items} onClose={() => setSelectedOutfitId(null)} />}
       <WardrobeImportFlow onGarmentApproved={addImportedItem} onModeledApproved={attachImportedModeledImage} />
     </div>
