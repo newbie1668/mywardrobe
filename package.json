@@ -8,13 +8,10 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "build:public-preview": "VITE_PUBLIC_FIXTURE_PREVIEW=true vite build",
     "preview": "vite preview",
     "check": "npm run build",
-    "check:public-preview": "npm run build:public-preview",
     "test": "vitest run",
-    "test:browser": "playwright test",
-    "test:public-preview": "PUBLIC_PREVIEW_E2E=true playwright test tests/browser/public-preview.spec.js"
+    "test:browser": "playwright test"
   },
   "dependencies": {
     "@fontsource-variable/instrument-sans": "^5.2.8",

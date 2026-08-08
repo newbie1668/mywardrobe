@@ -1,8 +1,7 @@
 import { defineConfig } from "@playwright/test";
 
-const publicPreviewE2E = process.env.PUBLIC_PREVIEW_E2E === "true";
-const port = publicPreviewE2E ? 4175 : 4174;
-const publicPreviewUrl = process.env.PUBLIC_PREVIEW_URL || `http://127.0.0.1:${port}`;
+const port = 4174;
+const appUrl = process.env.APP_URL || `http://127.0.0.1:${port}`;
 
 export default defineConfig({
   testDir: "./tests/browser",
@@ -11,14 +10,14 @@ export default defineConfig({
   retries: process.env.CI ? 2 : 0,
   reporter: "list",
   use: {
-    baseURL: publicPreviewUrl,
+    baseURL: appUrl,
     browserName: "chromium",
     ...(process.env.CI ? {} : { channel: "chrome" }),
     trace: "retain-on-failure",
   },
-  webServer: process.env.PUBLIC_PREVIEW_URL ? undefined : {
+  webServer: process.env.APP_URL ? undefined : {
     command: `npm run dev -- --host 127.0.0.1 --port ${port}`,
-    env: { ...process.env, WARDROBE_DATA_DIR: ".playwright-data", ...(publicPreviewE2E ? { VITE_PUBLIC_FIXTURE_PREVIEW: "true" } : {}) },
+    env: { ...process.env, WARDROBE_DATA_DIR: ".playwright-data" },
     url: `http://127.0.0.1:${port}`,
     reuseExistingServer: !process.env.CI,
   },
