@@ -1076,6 +1076,7 @@ export function App({
   const [outfitError, setOutfitError] = useState("");
   const runningCopyGenerations = useRef(new Set());
   const runningPreviewRequests = useRef(new Set());
+  const reconciledFailedPreviewJobs = useRef(new Set());
 
   useEffect(() => {
     loadWardrobe()
@@ -1194,6 +1195,20 @@ export function App({
             .finally(() => runningPreviewRequests.current.delete(requestId));
         }, 450);
         timerIds.push(timer);
+      });
+
+    // A local service can finish or be corrected while the browser still holds
+    // a persisted failure. Reconcile that job once when the app loads so a
+    // validated image is not kept hidden behind stale browser state.
+    savedOutfits
+      .filter((outfit) => !outfit.incomplete?.missingGarmentIds?.length && outfit.generation?.status === "failed" && outfit.generation?.jobId)
+      .forEach((outfit) => {
+        const requestId = `reconcile:${outfit.generation.jobId}`;
+        if (reconciledFailedPreviewJobs.current.has(requestId)) return;
+        reconciledFailedPreviewJobs.current.add(requestId);
+        modeledPreviewService.read(outfit.generation.jobId)
+          .then((job) => updatePreview(outfit.id, job))
+          .catch(() => {});
       });
 
     return () => timerIds.forEach(clearTimeout);

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
+import { resolveModeledPreviewReview } from "../src/modeled-preview-review.js";
 
 const API_ROOT = "/api/import/jobs";
 const ASSET_ROOT = "/api/import/assets";
@@ -351,9 +352,12 @@ async function openAIAnalyze({ key, baseUrl, model, image, mime }) {
   return parsed.items;
 }
 
-async function reviewModeledPreview({ key, baseUrl, model, preview, modelReference, garments }) {
+async function reviewModeledPreview({ key, baseUrl, model, preview, modelReference, garments, priorRejectionReasons = null }) {
   const image = (value) => ({ type: "input_image", image_url: `data:image/png;base64,${value.toString("base64")}`, detail: "high" });
   const garmentList = garments.map(({ name }, index) => `Image ${index + 3}: ${name}`).join("; ");
+  const confirmationContext = Array.isArray(priorRejectionReasons)
+    ? `A first review rejected this candidate for: ${priorRejectionReasons.join(" ") || "unspecified reasons"}. Independently adjudicate that decision; it may be wrong. Do not repeat a claimed mismatch unless it is directly visible in the candidate. `
+    : "";
   const response = await fetch(`${baseUrl}/responses`, {
     method: "POST",
     headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
@@ -362,7 +366,7 @@ async function reviewModeledPreview({ key, baseUrl, model, preview, modelReferen
       input: [{ role: "user", content: [
         {
           type: "input_text",
-          text: `Review a proposed Modeled Preview. The first image after this text is the generated candidate and is exactly 1024 by 1024 square; assess framing only from that first image. Determine whether the entire head, legs, and footwear are visibly inside its canvas. Do not infer cropping merely from a close composition or subject position. The second image is an identity reference, not a garment reference. ${garmentList}. Accept only when the generated candidate is a full-body view with recognizable identity and every selected garment visible, matching its supplied colour and construction. Reject identity drift, missing selected garments, changed garment colours or construction, invented visible clothing, unrealistic anatomy, or genuinely cropped/incomplete framing. Return concise factual reasons.`,
+          text: `Review a proposed Modeled Preview. ${confirmationContext}The first image after this text is the generated candidate and is exactly 1024 by 1024 square; assess framing only from that first image. Determine whether the entire head, legs, and footwear are visibly inside its canvas. Do not infer cropping merely from a close composition or subject position. The second image is an identity reference, not a garment reference. ${garmentList}. Accept when the generated candidate is a full-body view with recognizable identity and every selected garment visible, matching its supplied colour and construction. Reject only direct visual evidence of identity drift, missing selected garments, changed garment colours or construction, invented visible clothing, unrealistic anatomy, or genuinely cropped/incomplete framing. Return concise factual reasons.`,
         },
         image(preview),
         image(modelReference),
@@ -488,13 +492,15 @@ export function wardrobeImportApi(options = {}) {
         data: await readFile(path.join(libraryAssetDir, fileName)),
         mime: "image/png",
         color: record.color || null,
+        part: record.part || "wardrobe item",
+        tags: Array.isArray(record.tags) ? record.tags : [],
       };
     }));
   }
 
   function modeledPreviewPrompt(garments) {
-    const garmentReferences = garments.map(({ name, color }, index) => (
-      `Image ${index + 2} is ${name}${color ? ` with primary colour ${color}` : ""}`
+    const garmentReferences = garments.map(({ name, color, part, tags }, index) => (
+      `Image ${index + 2} is ${name} (${part}${color ? `, primary colour ${color}` : ""}${tags?.length ? `, details: ${tags.join(", ")}` : ""})`
     )).join(". ");
     return `Create a square 1:1, full-body editorial fashion photograph of the person in Image 1 wearing every exact garment shown in the following reference images. ${garmentReferences}. Use Image 1 only for recognizable identity, face, hair, age, and body proportions; do not copy any clothing, accessories, name badges, watches, belts, logos, or objects from Image 1 unless they also appear in a selected garment reference. Preserve every selected garment's visible colour, material, fit, construction, graphics, logos, and distinctive details. Show the complete look unobstructed from head to footwear. Do not add, remove, substitute, or conceal selected clothing. Use a restrained real-world setting and natural light. No text, watermark, collage, product mockup, cropped body, or synthetic appearance.`;
   }
@@ -532,7 +538,7 @@ export function wardrobeImportApi(options = {}) {
         reviewing.status = "reviewing";
         reviewing.imageFile = imageFile;
         await saveModeledPreviewJob(reviewing);
-        const review = await reviewModeledPreview({
+        const firstReview = await reviewModeledPreview({
           key,
           baseUrl: apiBaseUrl(),
           model: setting("OPENAI_VISION_MODEL", "gpt-5.4-mini"),
@@ -540,6 +546,17 @@ export function wardrobeImportApi(options = {}) {
           modelReference,
           garments,
         });
+        const review = firstReview.accepted
+          ? firstReview
+          : resolveModeledPreviewReview(firstReview, await reviewModeledPreview({
+            key,
+            baseUrl: apiBaseUrl(),
+            model: setting("OPENAI_VISION_MODEL", "gpt-5.4-mini"),
+            preview: bytes,
+            modelReference,
+            garments,
+            priorRejectionReasons: firstReview.reasons,
+          }));
         const completed = await loadModeledPreviewJob(current.id);
         completed.review = review;
         completed.status = review.accepted ? "ready" : "failed";
