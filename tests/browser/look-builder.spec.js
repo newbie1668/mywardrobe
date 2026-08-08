@@ -29,9 +29,9 @@ const wardrobe = [
   garment("accessory-two", "Calamine accessory two", "accessories_up", "#78cdd0"),
 ];
 
-async function openFixtureLookBuilder(page, fixtureWardrobe = wardrobe) {
+async function openFixtureLookBuilder(page, fixtureWardrobe = wardrobe, fixtureOutfits = []) {
   await page.route("**/api/import/wardrobe", (route) => route.fulfill({ json: fixtureWardrobe }));
-  await page.route("**/api/import/outfits", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/import/outfits", (route) => route.fulfill({ json: fixtureOutfits }));
   await page.goto("/");
   await page.getByTestId("wardrobe-item-anchor").click();
   await expect(page.getByRole("heading", { name: "Look Builder" })).toBeVisible();
@@ -166,4 +166,59 @@ test("an anchor edit that removes every Candidate Combination explains each clea
   await expect(notice).toContainText("Seashell bottom 0 was removed because no Candidate Combination is available for this Anchor Piece.");
   await expect(notice).toContainText("Black loafers was removed because no Candidate Combination is available for this Anchor Piece.");
   await expect(page.locator(".pairing-option.selected")).toHaveCount(0);
+});
+
+test("saving a Complete Look persists a generating Saved Outfit ahead of Curated looks across a restart", async ({ page }) => {
+  const consoleErrors = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") consoleErrors.push(message.text());
+  });
+  await page.addInitScript(() => {
+    if (localStorage.getItem("open-wardrobe-saved-outfits-v1")) return;
+    localStorage.setItem("open-wardrobe-saved-outfits-v1", JSON.stringify([{
+      id: "saved-earlier",
+      sourceType: "saved",
+      createdAt: "2026-08-08T12:00:00.000Z",
+      garmentIds: ["anchor"],
+      selectedGarmentsByRole: {},
+      colourMappings: {},
+      referenceCombination: { combinationNumber: 176 },
+      generation: { status: "failed", error: "Preview could not be generated." },
+      name: "Earlier saved outfit",
+      reason: "Preview could not be generated.",
+    }]));
+  });
+  await openFixtureLookBuilder(page, wardrobe, [{
+    id: "curated-first",
+    name: "Existing curated look",
+    image: IMAGE,
+    reason: "This collection was already here.",
+    garmentIds: ["anchor"],
+  }]);
+
+  const saveButton = page.getByRole("button", { name: "Save and generate preview" });
+  await expect(saveButton).toBeDisabled();
+  await pairingRole(page, "Bottom").getByRole("button", { name: /Seashell bottom 0/ }).click();
+  await pairingRole(page, "Footwear").getByRole("button", { name: /Black loafers/ }).click();
+  await expect(saveButton).toBeEnabled();
+
+  await saveButton.click();
+  await expect(page.getByRole("tab", { name: /Outfits/ })).toHaveAttribute("aria-selected", "true");
+  await page.getByRole("button", { name: "Close viewer" }).click();
+
+  const savedSection = page.getByRole("region", { name: "Saved from your wardrobe" }).getByLabel("Saved from your wardrobe");
+  await expect(savedSection.getByRole("button").first()).toContainText("Saved outfit");
+  await expect(savedSection.getByRole("button").nth(1)).toContainText("Earlier saved outfit");
+  await expect(savedSection.getByRole("button").nth(1)).toContainText("Preview failed");
+  await expect(savedSection).toContainText("Dictionary Vol. 1 · Combination 176");
+  await expect(savedSection).toContainText("Your modeled preview is being generated.");
+  await expect(page.getByRole("region", { name: "Curated looks" }).getByLabel("Curated looks")).toContainText("Existing curated look");
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
+
+  await page.reload();
+  await page.getByRole("tab", { name: /Outfits/ }).click();
+  await expect(page.getByRole("region", { name: "Saved from your wardrobe" }).getByLabel("Saved from your wardrobe").getByRole("button").first()).toContainText("Saved outfit");
+  await expect(page.getByRole("region", { name: "Curated looks" }).getByLabel("Curated looks")).toContainText("Existing curated look");
+  expect(consoleErrors).toEqual([]);
 });

@@ -175,6 +175,43 @@ button { font: inherit; }
   padding: 43px 52px 70px;
 }
 
+.outfits-collections {
+  display: grid;
+  gap: 54px;
+  padding: 43px 52px 70px;
+}
+
+.outfit-section > header {
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 14px;
+}
+
+.outfit-section > header p {
+  margin: 0 0 5px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
+.outfit-section > header h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 520;
+  letter-spacing: -.02em;
+}
+
+.outfit-section .outfit-grid {
+  padding: 24px 0 0;
+}
+
+.outfit-section-empty {
+  margin: 18px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .outfit-card {
   appearance: none;
   min-width: 0;
@@ -199,6 +236,21 @@ button { font: inherit; }
   aspect-ratio: 1;
   overflow: hidden;
   background: #ded8ce;
+}
+
+.outfit-card-photo.generating,
+.outfit-viewer-photo.generating {
+  display: grid;
+  place-items: center;
+  background: linear-gradient(135deg, #ded8ce, #f0ede7, #ded8ce);
+}
+
+.outfit-card-generation {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: .1em;
+  text-transform: uppercase;
 }
 
 .outfit-card-photo img {
@@ -1224,6 +1276,7 @@ button { font: inherit; }
 }
 
 .look-save-readiness {
+  appearance: none;
   flex: 0 0 auto;
   min-width: 148px;
   min-height: 36px;
@@ -1233,10 +1286,15 @@ button { font: inherit; }
   gap: 7px;
   border: 1px solid var(--line);
   padding: 8px 12px;
+  background: transparent;
   color: var(--muted);
   font-size: 10px;
   font-weight: 500;
+  text-align: center;
+  cursor: pointer;
 }
+
+.look-save-readiness:disabled { cursor: not-allowed; }
 
 .look-save-readiness.ready {
   border-color: var(--ink);
@@ -1647,6 +1705,7 @@ button { font: inherit; }
   .gallery-header { padding-inline: 34px; }
   .gallery-grid { padding-inline: 32px; grid-template-columns: repeat(auto-fill, minmax(155px, 1fr)); gap-inline: 18px; }
   .outfit-grid { padding-inline: 32px; }
+  .outfits-collections { padding-inline: 32px; }
   .category-nav { max-width: 100%; }
   .viewer { padding-inline: 30px; }
   .has-modeled-image .viewer-details.editing { padding-inline: 30px; }
@@ -1667,6 +1726,8 @@ button { font: inherit; }
     gap: 26px 16px;
     padding: 30px 20px 50px;
   }
+  .outfits-collections { padding: 30px 20px 50px; }
+  .outfit-section .outfit-grid { padding: 24px 0 0; }
   .gallery-item { padding: 5px; }
   .viewer-overlay { background: rgba(25, 24, 22, .34); }
   .viewer-entry { width: 100%; height: 100dvh; }
@@ -1710,6 +1771,8 @@ button { font: inherit; }
     gap: 30px;
     padding: 22px 18px 40px;
   }
+  .outfits-collections { gap: 42px; padding: 22px 18px 40px; }
+  .outfit-section .outfit-grid { padding: 22px 0 0; }
   .outfit-card-heading { gap: 10px; }
   .outfit-card-heading small { max-width: 50%; }
   .outfit-viewer-entry { width: 100%; height: 100dvh; }

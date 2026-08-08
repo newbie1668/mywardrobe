@@ -9,6 +9,12 @@ import {
   selectPairingOption,
   switchReferenceCombination,
 } from "./pairing-data.js";
+import {
+  createSavedOutfit,
+  readOutfitCollection,
+  readSavedOutfits,
+  writeSavedOutfits,
+} from "./saved-outfits.js";
 
 const STORAGE_KEY = "open-wardrobe-edits-v1";
 const DELETED_STORAGE_KEY = "open-wardrobe-deleted-v1";
@@ -182,8 +188,27 @@ function GalleryItem({ item, selected, onOpen }) {
   );
 }
 
+function outfitMetadata(outfit) {
+  if (outfit.sourceType === "saved") {
+    const combinationNumber = outfit.referenceCombination?.combinationNumber;
+    return combinationNumber ? `Dictionary Vol. 1 · Combination ${combinationNumber}` : "Dictionary Vol. 1";
+  }
+  return Array.isArray(outfit.occasion) ? outfit.occasion.join(" · ") : "wardrobe idea";
+}
+
+function generationMessage(outfit) {
+  if (outfit.generation?.status === "failed") return outfit.generation.error || "Preview generation needs attention.";
+  if (outfit.generation?.status === "generating") return "Your modeled preview is being generated.";
+  return outfit.reason;
+}
+
+function previewStateLabel(outfit) {
+  return outfit.generation?.status === "failed" ? "Preview failed" : "Generating preview";
+}
+
 function OutfitCard({ outfit, selected, onOpen }) {
-  const occasions = Array.isArray(outfit.occasion) ? outfit.occasion.join(" · ") : "wardrobe idea";
+  const isGenerating = outfit.generation?.status === "generating";
+  const hasPreview = Boolean(outfit.image);
 
   return (
     <button
@@ -193,20 +218,24 @@ function OutfitCard({ outfit, selected, onOpen }) {
       aria-label={`View ${outfit.name || "outfit idea"}`}
       aria-pressed={selected}
     >
-      <span className="outfit-card-photo">
-        <OptimizedImage
-          src={outfit.image}
-          alt=""
-          sizes="(max-width: 520px) calc(50vw - 16px), (max-width: 860px) calc(50vw - 28px), 340px"
-          breakpoints={[240, 320, 480, 640, 800]}
-        />
+      <span className={`outfit-card-photo${isGenerating ? " generating" : ""}`}>
+        {hasPreview ? (
+          <OptimizedImage
+            src={outfit.image}
+            alt=""
+            sizes="(max-width: 520px) calc(50vw - 16px), (max-width: 860px) calc(50vw - 28px), 340px"
+            breakpoints={[240, 320, 480, 640, 800]}
+          />
+        ) : (
+          <span className="outfit-card-generation" aria-hidden="true">{previewStateLabel(outfit)}</span>
+        )}
       </span>
       <span className="outfit-card-details">
         <span className="outfit-card-heading">
           <strong>{outfit.name}</strong>
-          <small>{occasions}</small>
+          <small>{outfitMetadata(outfit)}</small>
         </span>
-        <span className="outfit-card-reason">{outfit.reason}</span>
+        <span className="outfit-card-reason">{generationMessage(outfit)}</span>
       </span>
     </button>
   );
@@ -215,6 +244,11 @@ function OutfitCard({ outfit, selected, onOpen }) {
 function OutfitViewer({ outfit, items, onClose }) {
   const closeButtonRef = useRef(null);
   const itemNames = useMemo(() => new Map(items.map((item) => [item.id, item.name])), [items]);
+  const isSaved = outfit.sourceType === "saved";
+  const hasPreview = Boolean(outfit.image);
+  const pieces = isSaved
+    ? Object.values(outfit.selectedGarmentsByRole || {})
+    : outfit.garmentIds.map((garmentId) => ({ pieceId: garmentId, pieceName: itemNames.get(garmentId) || garmentId }));
 
   useEffect(() => {
     const onKeyDown = (event) => {
@@ -237,29 +271,31 @@ function OutfitViewer({ outfit, items, onClose }) {
           <button className="viewer-icon-close" type="button" onClick={onClose} aria-label="Close outfit viewer" ref={closeButtonRef}>
             <X size={24} weight="light" aria-hidden="true" />
           </button>
-          <div className="outfit-viewer-photo">
-            <OptimizedImage
-              src={outfit.image}
-              alt={`${outfit.name} modeled outfit`}
-              sizes="(max-width: 860px) 100vw, 520px"
-              breakpoints={[320, 480, 640, 800, 1040, 1280]}
-              quality={84}
-              priority
-            />
+          <div className={`outfit-viewer-photo${!hasPreview ? " generating" : ""}`}>
+            {hasPreview ? (
+              <OptimizedImage
+                src={outfit.image}
+                alt={`${outfit.name} modeled outfit`}
+                sizes="(max-width: 860px) 100vw, 520px"
+                breakpoints={[320, 480, 640, 800, 1040, 1280]}
+                quality={84}
+                priority
+              />
+            ) : <span className="outfit-card-generation">{previewStateLabel(outfit)}</span>}
           </div>
           <div className="outfit-viewer-details">
-            <p className="outfit-viewer-eyebrow">Outfit idea</p>
+            <p className="outfit-viewer-eyebrow">{isSaved ? outfitMetadata(outfit) : "Outfit idea"}</p>
             <h2>{outfit.name}</h2>
-            {Array.isArray(outfit.occasion) && outfit.occasion.length > 0 && (
+            {!isSaved && Array.isArray(outfit.occasion) && outfit.occasion.length > 0 && (
               <div className="outfit-occasion-list" aria-label="Occasions">
                 {outfit.occasion.map((occasion) => <span key={occasion}>{occasion}</span>)}
               </div>
             )}
-            <p className="outfit-viewer-reason">{outfit.reason}</p>
+            <p className="outfit-viewer-reason">{generationMessage(outfit)}</p>
             <div className="outfit-piece-list">
               <p>Pieces</p>
               <ul>
-                {outfit.garmentIds.map((garmentId) => <li key={garmentId}>{itemNames.get(garmentId) || garmentId}</li>)}
+                {pieces.map((piece) => <li key={piece.pieceId}>{piece.pieceName}</li>)}
               </ul>
             </div>
           </div>
@@ -269,7 +305,7 @@ function OutfitViewer({ outfit, items, onClose }) {
   );
 }
 
-function LookBuilderPanel({ item, items }) {
+function LookBuilderPanel({ item, items, onSaveCompleteLook }) {
   const lookBuilder = useMemo(() => getLookBuilder(item, items), [item, items]);
   const defaultCombinationNumber = lookBuilder.candidates[0]?.combinationNumber || null;
   const [referenceCombinationNumber, setReferenceCombinationNumber] = useState(defaultCombinationNumber);
@@ -569,10 +605,15 @@ function LookBuilderPanel({ item, items }) {
                   </ul>
                 )}
               </div>
-              <span className={`look-save-readiness${wearableCoreStatus.canSave ? " ready" : ""}`}>
+              <button
+                className={`look-save-readiness${wearableCoreStatus.canSave ? " ready" : ""}`}
+                type="button"
+                disabled={!wearableCoreStatus.canSave}
+                onClick={() => onSaveCompleteLook(completeLook, referenceCombination)}
+              >
                 {wearableCoreStatus.canSave && <Check size={15} weight="bold" aria-hidden="true" />}
-                {wearableCoreStatus.canSave ? "Ready to save" : "Save unavailable"}
-              </span>
+                Save and generate preview
+              </button>
             </div>
           </section>
         </>
@@ -749,7 +790,7 @@ function ItemEditor({ draft, setDraft, palette, sampling, setSampling, sampleSta
   );
 }
 
-function ItemViewer({ item, items, onClose, onSave, onDelete }) {
+function ItemViewer({ item, items, onClose, onSave, onDelete, onSaveCompleteLook }) {
   const closeButtonRef = useRef(null);
   const imageRef = useRef(null);
   const samplingCanvasRef = useRef(null);
@@ -918,7 +959,7 @@ function ItemViewer({ item, items, onClose, onSave, onDelete }) {
       )}
 
       <div className="viewer-details editing">
-        <LookBuilderPanel item={{ ...item, ...draft }} items={items} />
+        <LookBuilderPanel item={{ ...item, ...draft }} items={items} onSaveCompleteLook={onSaveCompleteLook} />
 
         <ItemEditor
           draft={draft}
@@ -951,6 +992,7 @@ function ItemViewer({ item, items, onClose, onSave, onDelete }) {
 export function App() {
   const [items, setItems] = useState([]);
   const [outfits, setOutfits] = useState([]);
+  const [savedOutfits, setSavedOutfits] = useState(() => readSavedOutfits());
   const [activeView, setActiveView] = useState("wardrobe");
   const [activeType, setActiveType] = useState("all");
   const [selectedId, setSelectedId] = useState(null);
@@ -982,13 +1024,14 @@ export function App() {
         if (!response.ok) throw new Error("Could not load outfit ideas.");
         return response.json();
       })
-      .then((payload) => setOutfits(Array.isArray(payload) ? payload : payload.outfits || []))
+      .then((payload) => setOutfits(readOutfitCollection(Array.isArray(payload) ? payload : payload.outfits || [], null).curated))
       .catch((requestError) => setOutfitError(requestError.message))
       .finally(() => setOutfitLoading(false));
   }, []);
 
   const selectedItem = items.find((item) => item.id === selectedId) || null;
-  const selectedOutfit = outfits.find((outfit) => outfit.id === selectedOutfitId) || null;
+  const allOutfits = useMemo(() => [...savedOutfits, ...outfits], [outfits, savedOutfits]);
+  const selectedOutfit = allOutfits.find((outfit) => outfit.id === selectedOutfitId) || null;
 
   const visibleItems = useMemo(() => {
     const filtered = activeType === "all" ? items : items.filter((item) => item.part === activeType);
@@ -1042,12 +1085,25 @@ export function App() {
     setItems((current) => current.map((item) => item.id === id ? { ...item, modeledImage } : item));
   }, []);
 
+  const saveCompleteLook = (completeLook, referenceCombination) => {
+    try {
+      const savedOutfit = createSavedOutfit(completeLook, referenceCombination);
+      const nextSavedOutfits = [savedOutfit, ...savedOutfits].sort((first, second) => second.createdAt.localeCompare(first.createdAt));
+      writeSavedOutfits(nextSavedOutfits);
+      setSavedOutfits(nextSavedOutfits);
+      setOutfitError("");
+      setActiveView("outfits");
+    } catch {
+      setOutfitError("Could not save this Complete Look. Please try again.");
+    }
+  };
+
   return (
     <div className={`app-shell${selectedItem ? " has-selection" : ""}`}>
       <main className="gallery-pane">
         <header className="gallery-header">
           <div className="gallery-meta-row">
-            <p className="piece-count">{activeView === "wardrobe" ? `${items.length} ${items.length === 1 ? "piece" : "pieces"}` : `${outfits.length} ${outfits.length === 1 ? "look" : "looks"}`}</p>
+            <p className="piece-count">{activeView === "wardrobe" ? `${items.length} ${items.length === 1 ? "piece" : "pieces"}` : `${allOutfits.length} ${allOutfits.length === 1 ? "look" : "looks"}`}</p>
             <nav className="view-nav" aria-label="Choose collection" role="tablist">
               <button
                 type="button"
@@ -1066,7 +1122,7 @@ export function App() {
                 role="tab"
               >
                 Outfits
-                {outfits.length > 0 && <span className="view-nav-count">{outfits.length}</span>}
+                {allOutfits.length > 0 && <span className="view-nav-count">{allOutfits.length}</span>}
               </button>
             </nav>
           </div>
@@ -1111,24 +1167,32 @@ export function App() {
           <>
             {outfitError && <p className="status error">{outfitError}</p>}
             {!outfitError && outfitLoading && <p className="status">Loading outfit ideas</p>}
-            {!outfitError && !outfitLoading && !outfits.length && <p className="status empty">Generate an outfit collection to see modeled looks here.</p>}
-            {!!outfits.length && (
-              <section className="outfit-grid" aria-label="Modeled outfit ideas">
-                {outfits.map((outfit) => (
-                  <OutfitCard
-                    key={outfit.id}
-                    outfit={outfit}
-                    selected={selectedOutfitId === outfit.id}
-                    onOpen={setSelectedOutfitId}
-                  />
-                ))}
-              </section>
+            {!outfitError && !outfitLoading && !allOutfits.length && <p className="status empty">Save a Complete Look or generate an outfit collection to see modeled looks here.</p>}
+            {!!allOutfits.length && (
+              <div className="outfits-collections">
+                <section className="outfit-section" aria-labelledby="saved-outfits-title">
+                  <header><p>Saved from your wardrobe</p><h2 id="saved-outfits-title">Saved from your wardrobe</h2></header>
+                  {savedOutfits.length ? (
+                    <div className="outfit-grid" aria-label="Saved from your wardrobe">
+                      {savedOutfits.map((outfit) => <OutfitCard key={outfit.id} outfit={outfit} selected={selectedOutfitId === outfit.id} onOpen={setSelectedOutfitId} />)}
+                    </div>
+                  ) : <p className="outfit-section-empty">Complete Looks you save will appear here.</p>}
+                </section>
+                <section className="outfit-section" aria-labelledby="curated-outfits-title">
+                  <header><p>Curated looks</p><h2 id="curated-outfits-title">Curated looks</h2></header>
+                  {outfits.length ? (
+                    <div className="outfit-grid" aria-label="Curated looks">
+                      {outfits.map((outfit) => <OutfitCard key={outfit.id} outfit={outfit} selected={selectedOutfitId === outfit.id} onOpen={setSelectedOutfitId} />)}
+                    </div>
+                  ) : <p className="outfit-section-empty">No curated looks are available yet.</p>}
+                </section>
+              </div>
             )}
           </>
         )}
       </main>
 
-      {selectedItem && <ItemViewer item={selectedItem} items={items} onClose={() => setSelectedId(null)} onSave={saveItem} onDelete={deleteItem} />}
+      {selectedItem && <ItemViewer item={selectedItem} items={items} onClose={() => setSelectedId(null)} onSave={saveItem} onDelete={deleteItem} onSaveCompleteLook={saveCompleteLook} />}
       {selectedOutfit && <OutfitViewer outfit={selectedOutfit} items={items} onClose={() => setSelectedOutfitId(null)} />}
       <WardrobeImportFlow onGarmentApproved={addImportedItem} onModeledApproved={attachImportedModeledImage} />
     </div>
