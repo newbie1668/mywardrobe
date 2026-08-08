@@ -128,7 +128,7 @@ Before opening a pull request, keep personal files out of the commit and run the
 
 ## Credits and inspiration
 
-This project began as an adaptation of [Open Wardrobe](https://github.com/tandpfun/open-wardrobe), created by [Thijs](https://github.com/tandpfun). Thank you to Thijs for the original open-source project and inspiration. See the [original launch post](https://x.com/cdngdev/status/2076812846793650485).
+This project is a fork of [Wardrobe](https://github.com/tandpfun/wardrobe), created by [Thijs](https://github.com/tandpfun). Thank you to Thijs for open-sourcing the local-first wardrobe importer, editor, and modeled-preview workflow that this project builds on.
 
 This fork expands the original with the Dictionary-guided Wada Look Builder, context-aware pairings, Saved Outfits, full-look Modeled Previews with fidelity review, generated names and descriptions, and saved-outfit deletion.
 
